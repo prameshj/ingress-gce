@@ -50,6 +50,7 @@ import (
 	"k8s.io/ingress-gce/pkg/flags"
 	_ "k8s.io/ingress-gce/pkg/klog"
 	"k8s.io/ingress-gce/pkg/version"
+	"k8s.io/ingress-gce/pkg/servicecontroller"
 )
 
 func main() {
@@ -229,6 +230,11 @@ func runControllers(ctx *ingctx.ControllerContext) {
 	go fwc.Run()
 	klog.V(0).Infof("firewall controller started")
 
+	svc, err := service.New(ctx.Cloud, ctx.KubeClient, ctx.ServiceInformer, ctx.NodeInformer, nil, flags.F.ClusterName)
+	if err != nil {
+		klog.Fatalf("Failed to start service controller - %v", err)
+	}
+	go svc.Run(stopCh, int(flags.F.ConcurrentServiceSyncs))
 	ctx.Start(stopCh)
 	lbc.Init()
 	lbc.Run()

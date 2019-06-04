@@ -26,7 +26,6 @@ import (
 
 	"k8s.io/klog"
 )
-
 const (
 	defaultPrefix = "k8s"
 
@@ -472,3 +471,20 @@ func negSuffix(uid, namespace, name, port, subset string) string {
 	negHash := fmt.Sprintf("%x", sha256.Sum256([]byte(negString)))
 	return negHash[:8]
 }
+
+// From cloudprovider/gce/ilb naming
+func (n *Namer) ILBBackend(lbName string, shared bool, scheme cloud.LbScheme, protocol v1.Protocol, svcAffinity v1.ServiceAffinity) string {
+	if shared {
+		hash := sha1.New()
+
+		// For every non-nil option, hash its value. Currently, only service affinity is relevant.
+		hash.Write([]byte(string(svcAffinity)))
+
+		hashed := hex.EncodeToString(hash.Sum(nil))
+		hashed = hashed[:16]
+		return fmt.Sprintf("k8s-%s-%s-%s-nmv1-%s", n.UID(), strings.ToLower(string(scheme)), strings.ToLower(string(protocol)), hashed)
+	}
+	return lbName
+}
+
+

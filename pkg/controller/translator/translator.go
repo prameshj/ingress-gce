@@ -430,7 +430,7 @@ func listEndpointTargetPorts(indexer cache.Indexer, namespace, name, targetPort 
 	if i, err := strconv.Atoi(targetPort); err == nil {
 		return []int{i}
 	}
-
+	gceNodes := sets.NewString()
 	ep, exists, err := indexer.Get(
 		&api_v1.Endpoints{
 			ObjectMeta: meta_v1.ObjectMeta{
@@ -447,6 +447,12 @@ func listEndpointTargetPorts(indexer cache.Indexer, namespace, name, targetPort 
 	if err != nil {
 		klog.Errorf("Failed to retrieve endpoint object %v/%v: %v", namespace, name, err)
 		return []int{}
+	}
+
+	for _, subset := range ep.(*api_v1.Endpoints).Subsets {
+		for _, addrs := range subset.Addresses {
+			gceNodes.Insert(addrs.NodeName)
+		}
 	}
 
 	ret := []int{}

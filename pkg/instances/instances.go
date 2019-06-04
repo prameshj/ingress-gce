@@ -39,6 +39,7 @@ type Instances struct {
 	cloud InstanceGroups
 	ZoneLister
 	namer namer.BackendNamer
+	maxCount int
 }
 
 // NewNodePool creates a new node pool.
@@ -48,6 +49,7 @@ func NewNodePool(cloud InstanceGroups, namer namer.BackendNamer) NodePool {
 	return &Instances{
 		cloud: cloud,
 		namer: namer,
+		maxCount : 0,
 	}
 }
 
@@ -250,10 +252,15 @@ func (i *Instances) splitNodesByZone(names []string) map[string][]string {
 // Add adds the given instances to the appropriately zoned Instance Group.
 func (i *Instances) Add(groupName string, names []string) error {
 	errs := []error{}
+	nodeCount := 0
 	for zone, nodeNames := range i.splitNodesByZone(names) {
 		klog.V(1).Infof("Adding nodes %v to %v in zone %v", nodeNames, groupName, zone)
 		if err := i.cloud.AddInstancesToInstanceGroup(groupName, zone, i.cloud.ToInstanceReferences(zone, nodeNames)); err != nil {
 			errs = append(errs, err)
+		}
+		nodeCount += 1
+		if nodeCount == i.maxCount {
+			glog.V(1).Infof("Reached max nodecount of %d in instanceGroup %v, zone %v", i.maxCount, nodeNames, groupName, zone)
 		}
 	}
 	if len(errs) == 0 {
@@ -274,6 +281,7 @@ func (i *Instances) Remove(groupName string, names []string) error {
 	if len(errs) == 0 {
 		return nil
 	}
+	// TODO check the count of nodes here, if it is less than the limit, try to find more nodes to add.
 	return fmt.Errorf("%v", errs)
 }
 

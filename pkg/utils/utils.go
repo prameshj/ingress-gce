@@ -392,7 +392,15 @@ func TraverseIngressBackends(ing *v1beta1.Ingress, process func(id ServicePortID
 }
 
 func ServiceKeyFunc(namespace, name string) string {
-	return fmt.Sprintf("%s/%s", namespace, name)
+	return types.NamespacedName{Namespace: namespace, Name: name}.String()
+}
+
+func SplitServiceKey(key string) (namespace string, name string) {
+	out := strings.Split(key, string(types.Separator))
+	if len(out) < 2 {
+		return "", ""
+	}
+	return out[0], out[1]
 }
 
 // NeedsCleanup returns true if the ingress needs to have its associated resources deleted.

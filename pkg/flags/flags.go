@@ -90,7 +90,6 @@ var (
 		EnableNonGCPMode                 bool
 		EnableDeleteUnusedFrontends      bool
 		EnableV2FrontendNamer            bool
-
 		LeaderElection LeaderElectionConfiguration
 	}{}
 )
