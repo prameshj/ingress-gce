@@ -30,6 +30,7 @@ import (
 	"k8s.io/ingress-gce/pkg/neg/readiness"
 	negtypes "k8s.io/ingress-gce/pkg/neg/types"
 	"k8s.io/klog"
+	"k8s.io/ingress-gce/pkg/utils"
 )
 
 type transactionSyncer struct {
@@ -270,7 +271,7 @@ func (s *transactionSyncer) operationInternal(operation transactionOp, zone stri
 }
 
 func (s *transactionSyncer) recordEvent(eventType, reason, eventDesc string) {
-	if svc := getService(s.serviceLister, s.Namespace, s.Name); svc != nil {
+	if svc, _ := utils.GetService(s.serviceLister, s.Namespace, s.Name); svc != nil {
 		s.recorder.Eventf(svc, eventType, reason, eventDesc)
 	}
 }

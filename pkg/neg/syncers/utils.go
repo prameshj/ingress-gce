@@ -22,8 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/api/compute/v1"
-	"k8s.io/api/core/v1"
+	compute "google.golang.org/api/compute/v1"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -96,21 +95,6 @@ func calculateNetworkEndpointDifference(targetMap, currentMap map[string]negtype
 	return addSet, removeSet
 }
 
-// getService retrieves service object from serviceLister based on the input Namespace and Name
-func getService(serviceLister cache.Indexer, namespace, name string) *apiv1.Service {
-	if serviceLister == nil {
-		return nil
-	}
-	service, exists, err := serviceLister.GetByKey(utils.ServiceKeyFunc(namespace, name))
-	if exists && err == nil {
-		return service.(*apiv1.Service)
-	}
-	if err != nil {
-		klog.Errorf("Failed to retrieve service %s/%s from store: %v", namespace, name, err)
-	}
-	return nil
-}
-
 // ensureNetworkEndpointGroup ensures corresponding NEG is configured correctly in the specified zone.
 func ensureNetworkEndpointGroup(svcNamespace, svcName, negName, zone, negServicePortName string, cloud negtypes.NetworkEndpointGroupCloud, serviceLister cache.Indexer, recorder record.EventRecorder) error {
 	neg, err := cloud.GetNetworkEndpointGroup(negName, zone)
@@ -131,7 +115,7 @@ func ensureNetworkEndpointGroup(svcNamespace, svcName, negName, zone, negService
 			return err
 		} else {
 			if recorder != nil && serviceLister != nil {
-				if svc := getService(serviceLister, svcNamespace, svcName); svc != nil {
+				if svc, _ := utils.GetService(serviceLister, svcNamespace, svcName); svc != nil {
 					recorder.Eventf(svc, apiv1.EventTypeNormal, "Delete", "Deleted NEG %q for %s in %q.", negName, negServicePortName, zone)
 				}
 			}
@@ -150,7 +134,7 @@ func ensureNetworkEndpointGroup(svcNamespace, svcName, negName, zone, negService
 			return err
 		} else {
 			if recorder != nil && serviceLister != nil {
-				if svc := getService(serviceLister, svcNamespace, svcName); svc != nil {
+				if svc, _ := utils.GetService(serviceLister, svcNamespace, svcName); svc != nil {
 					recorder.Eventf(svc, apiv1.EventTypeNormal, "Create", "Created NEG %q for %s in %q.", negName, negServicePortName, zone)
 				}
 			}
@@ -195,7 +179,7 @@ func toZoneNetworkEndpointMap(endpoints *apiv1.Endpoints, zoneGetter negtypes.Zo
 		}
 
 		// processAddressFunc adds the qualified endpoints from the input list into the endpointSet group by zone
-		processAddressFunc := func(addresses []v1.EndpointAddress, includeAllEndpoints bool) error {
+		processAddressFunc := func(addresses []apiv1.EndpointAddress, includeAllEndpoints bool) error {
 			for _, address := range addresses {
 				if address.NodeName == nil {
 					klog.V(2).Infof("Endpoint %q in Endpoints %s/%s does not have an associated node. Skipping", address.IP, endpoints.Namespace, endpoints.Name)
@@ -296,7 +280,7 @@ func shouldPodBeInNeg(podLister cache.Indexer, namespace, name string) bool {
 	if !exists {
 		return false
 	}
-	pod, ok := obj.(*v1.Pod)
+	pod, ok := obj.(*apiv1.Pod)
 	if !ok {
 		klog.Errorf("Failed to convert obj %s to v1.Pod. The object type is %T", key, obj)
 		return false

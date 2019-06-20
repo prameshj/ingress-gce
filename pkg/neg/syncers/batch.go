@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/api/compute/v1"
+	compute "google.golang.org/api/compute/v1"
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/clock"
@@ -34,6 +34,7 @@ import (
 	"k8s.io/ingress-gce/pkg/neg/metrics"
 	negtypes "k8s.io/ingress-gce/pkg/neg/types"
 	"k8s.io/klog"
+	"k8s.io/ingress-gce/pkg/utils"
 )
 
 // batchSyncer handles synchorizing NEGs for one service port. It handles sync, resync and retry on error.
@@ -109,7 +110,7 @@ func (s *batchSyncer) Start() error {
 					retryMesg = "(will retry)"
 				}
 
-				if svc := getService(s.serviceLister, s.Namespace, s.Name); svc != nil {
+				if svc, _ := utils.GetService(s.serviceLister, s.Namespace, s.Name); svc != nil {
 					s.recorder.Eventf(svc, apiv1.EventTypeWarning, "SyncNetworkEndpointGroupFailed", "Failed to sync NEG %q %s: %v", s.negName, retryMesg, err)
 				}
 			} else {
@@ -404,7 +405,7 @@ func (s *batchSyncer) operationInternal(wg *sync.WaitGroup, zone string, network
 	if err != nil {
 		errList.Add(err)
 	}
-	if svc := getService(s.serviceLister, s.Namespace, s.Name); svc != nil {
+	if svc, _ := utils.GetService(s.serviceLister, s.Namespace, s.Name); svc != nil {
 		if err == nil {
 			s.recorder.Eventf(svc, apiv1.EventTypeNormal, operationName, "%s %d network endpoint(s) (NEG %q in zone %q)", operationName, len(networkEndpoints), s.negName, zone)
 		} else {

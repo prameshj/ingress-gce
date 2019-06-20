@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	negtypes "k8s.io/ingress-gce/pkg/neg/types"
 	"k8s.io/klog"
+	"k8s.io/ingress-gce/pkg/utils"
 )
 
 type syncerCore interface {
@@ -97,7 +98,7 @@ func (s *syncer) Start() error {
 					retryMesg = "(will retry)"
 				}
 
-				if svc := getService(s.serviceLister, s.Namespace, s.Name); svc != nil {
+				if svc, _ := utils.GetService(s.serviceLister, s.Namespace, s.Name); svc != nil {
 					s.recorder.Eventf(svc, apiv1.EventTypeWarning, "SyncNetworkEndpointGroupFailed", "Failed to sync NEG %q %s: %v", s.negName, retryMesg, err)
 				}
 			} else {

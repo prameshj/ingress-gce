@@ -396,3 +396,18 @@ func TraverseIngressBackends(ing *extensions.Ingress, process func(id ServicePor
 func ServiceKeyFunc(namespace, name string) string {
 	return fmt.Sprintf("%s/%s", namespace, name)
 }
+
+// GetService retrieves service object from serviceLister based on the input Namespace and Name
+func GetService(serviceLister cache.Indexer, namespace, name string) (*api_v1.Service, error) {
+	if serviceLister == nil {
+		return nil, nil
+	}
+	service, exists, err := serviceLister.GetByKey(ServiceKeyFunc(namespace, name))
+	if exists && err == nil {
+		return service.(*api_v1.Service), nil
+	}
+	if err != nil {
+		klog.Errorf("Failed to retrieve service %s/%s from store: %v", namespace, name, err)
+	}
+	return nil, err
+}
