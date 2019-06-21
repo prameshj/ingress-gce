@@ -42,6 +42,7 @@ var MainServices = map[string]string{
 	"UrlMap":           "UrlMaps",
 	"TargetHttpProxy":  "TargetHttpProxies",
 	"TargetHttpsProxy": "TargetHttpsProxies",
+	"NetworkEndpointGroup": "NetworkEndpointGroups",
 }
 
 // TODO: (shance) Replace this with data gathered from meta.AllServices
