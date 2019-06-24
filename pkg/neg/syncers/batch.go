@@ -33,8 +33,8 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/ingress-gce/pkg/neg/metrics"
 	negtypes "k8s.io/ingress-gce/pkg/neg/types"
-	"k8s.io/klog"
 	"k8s.io/ingress-gce/pkg/utils"
+	"k8s.io/klog"
 )
 
 // batchSyncer handles synchorizing NEGs for one service port. It handles sync, resync and retry on error.
