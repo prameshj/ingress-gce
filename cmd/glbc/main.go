@@ -196,6 +196,8 @@ func runControllers(ctx *ingctx.ControllerContext) {
 
 	fwc := firewalls.NewFirewallController(ctx, flags.F.NodePortRanges.Values())
 
+	svc := controller.NewServiceController(ctx, stopCh, 5)
+
 	// TODO: Refactor NEG to use cloud mocks so ctx.Cloud can be referenced within NewController.
 	negController := neg.NewController(negtypes.NewAdapter(ctx.Cloud), ctx, lbc.Translator, ctx.ClusterNamer, flags.F.ResyncPeriod, flags.F.NegGCPeriod, neg.NegSyncerType(flags.F.NegSyncerType), flags.F.EnableReadinessReflector)
 
@@ -206,6 +208,9 @@ func runControllers(ctx *ingctx.ControllerContext) {
 
 	go fwc.Run()
 	klog.V(0).Infof("firewall controller started")
+
+	go svc.Run()
+	klog.V(0).Infof("service controller started")
 
 	ctx.Start(stopCh)
 	lbc.Init()

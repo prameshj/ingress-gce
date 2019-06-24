@@ -24,7 +24,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	clientset "k8s.io/client-go/kubernetes"
 	listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	cloudprovider "k8s.io/cloud-provider"
@@ -33,10 +36,8 @@ import (
 	"k8s.io/ingress-gce/pkg/utils"
 	"k8s.io/klog"
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
-	"k8s.io/kubernetes/pkg/util/slice"
-	clientset "k8s.io/client-go/kubernetes"
 	kubefeatures "k8s.io/kubernetes/pkg/features"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/kubernetes/pkg/util/slice"
 	"reflect"
 )
 
@@ -45,6 +46,11 @@ type loadBalancerOperation int
 const (
 	deleteLoadBalancer loadBalancerOperation = iota
 	ensureLoadBalancer
+
+	// Interval of synchronizing service status from apiserver
+	serviceSyncPeriod = 30 * time.Second
+	// Interval of synchronizing node status from apiserver
+	nodeSyncPeriod = 100 * time.Second
 )
 
 type cachedService struct {
@@ -60,6 +66,8 @@ type serviceCache struct {
 // This is the service controller from k/k, these create either an external or an internal loadbalancer.
 type ServiceController struct {
 	ctx                 *context.ControllerContext
+	knownHosts          []*v1.Node
+	servicesToUpdate    []*v1.Service
 	kubeClient          clientset.Interface
 	clusterName         string
 	balancer            cloudprovider.LoadBalancer
@@ -69,23 +77,25 @@ type ServiceController struct {
 	nodeLister          cache.Indexer
 	nodeListerSynced    cache.InformerSynced
 	nodes               *NodeController
-
-	queue  utils.TaskQueue
-	stopCh chan struct{}
+	queue               utils.TaskQueue
+	stopCh              chan struct{}
+	numWorkers          int
 }
 
 func NewServiceController(
 	ctx *context.ControllerContext,
-	stopCh chan struct{}) (*ServiceController, error) {
+	stopCh chan struct{}, numWorkers int) *ServiceController {
 	s := &ServiceController{ctx: ctx, nodeLister: ctx.NodeInformer.GetIndexer(), serviceLister: ctx.ServiceInformer.GetIndexer()}
 	s.kubeClient = ctx.KubeClient
 	s.serviceListerSynced = ctx.ServiceInformer.HasSynced
 	s.nodeListerSynced = ctx.NodeInformer.HasSynced
 	s.queue = utils.NewPeriodicTaskQueue("service", "services", s.syncService)
+	s.stopCh = stopCh
+	s.numWorkers = numWorkers
 	balancer, ok := ctx.Cloud.LoadBalancer()
 	if !ok {
 		klog.Errorf("Failed to get GCE loadBalancer instance")
-		return nil, nil
+		return nil
 	}
 	s.balancer = balancer
 
@@ -111,17 +121,97 @@ func NewServiceController(
 					// path when the deletion timestamp is added.
 					return
 				}
-				s.enqueueService(old)
+				s.queue.Enqueue(old)
 			},
 		},
 		serviceSyncPeriod,
 	)
 	s.serviceLister = ctx.ServiceInformer.GetIndexer()
+	return s
+}
 
-	/*if err := s.init(); err != nil {
-		return nil, err
-	}*/
-	return s, nil
+// nodeSyncLoop handles updating the hosts pointed to by all load
+// balancers whenever the set of nodes in the cluster changes.
+func (s *ServiceController) nodeSyncLoop() {
+	newHosts, err := utils.GetReadyNodes(listers.NewNodeLister(s.nodeLister))
+	if err != nil {
+		runtime.HandleError(fmt.Errorf("Failed to retrieve current set of nodes from node lister: %v", err))
+		return
+	}
+	if nodeSlicesEqualForLB(newHosts, s.knownHosts) {
+		// The set of nodes in the cluster hasn't changed, but we can retry
+		// updating any services that we failed to update last time around.
+		s.servicesToUpdate = s.updateLoadBalancerHosts(s.servicesToUpdate, newHosts)
+		return
+	}
+
+	klog.V(2).Infof("Detected change in list of current cluster nodes. New node set: %v",
+		nodeNames(newHosts))
+
+	// Try updating all services, and save the ones that fail to try again next
+	// round.
+	s.servicesToUpdate = s.cache.allServices()
+	numServices := len(s.servicesToUpdate)
+	s.servicesToUpdate = s.updateLoadBalancerHosts(s.servicesToUpdate, newHosts)
+	klog.V(2).Infof("Successfully updated %d out of %d load balancers to direct traffic to the updated set of nodes",
+		numServices-len(s.servicesToUpdate), numServices)
+
+	s.knownHosts = newHosts
+}
+
+// updateLoadBalancerHosts updates all existing load balancers so that
+// they will match the list of hosts provided.
+// Returns the list of services that couldn't be updated.
+func (s *ServiceController) updateLoadBalancerHosts(services []*v1.Service, hosts []*v1.Node) (servicesToRetry []*v1.Service) {
+	for _, service := range services {
+		func() {
+			if service == nil {
+				return
+			}
+			if err := s.lockedUpdateLoadBalancerHosts(service, hosts); err != nil {
+				runtime.HandleError(fmt.Errorf("failed to update load balancer hosts for service %s/%s: %v", service.Namespace, service.Name, err))
+				servicesToRetry = append(servicesToRetry, service)
+			}
+		}()
+	}
+	return servicesToRetry
+}
+
+// Updates the load balancer of a service, assuming we hold the mutex
+// associated with the service.
+func (s *ServiceController) lockedUpdateLoadBalancerHosts(service *v1.Service, hosts []*v1.Node) error {
+	if !wantsLoadBalancer(service) {
+		return nil
+	}
+
+	// This operation doesn't normally take very long (and happens pretty often), so we only record the final event
+	err := s.balancer.UpdateLoadBalancer(nil, s.clusterName, service, hosts)
+	if err == nil {
+		// If there are no available nodes for LoadBalancer service, make a EventTypeWarning event for it.
+		if len(hosts) == 0 {
+			s.ctx.Recorder(service.Namespace).Event(service, v1.EventTypeWarning, "UnAvailableLoadBalancer", "There are no available nodes for LoadBalancer")
+		} else {
+			s.ctx.Recorder(service.Namespace).Event(service, v1.EventTypeNormal, "UpdatedLoadBalancer", "Updated load balancer with new hosts")
+		}
+		return nil
+	}
+
+	// It's only an actual error if the load balancer still exists.
+	if _, exists, err := s.balancer.GetLoadBalancer(nil, s.clusterName, service); err != nil {
+		runtime.HandleError(fmt.Errorf("failed to check if load balancer exists for service %s/%s: %v", service.Namespace, service.Name, err))
+	} else if !exists {
+		return nil
+	}
+
+	s.ctx.Recorder(service.Namespace).Eventf(service, v1.EventTypeWarning, "UpdateLoadBalancerFailed", "Error updating load balancer with new hosts %v: %v", nodeNames(hosts), err)
+	return err
+}
+
+func nodeSlicesEqualForLB(x, y []*v1.Node) bool {
+	if len(x) != len(y) {
+		return false
+	}
+	return nodeNames(x).Equal(nodeNames(y))
 }
 
 func wantsLoadBalancer(service *v1.Service) bool {
@@ -234,24 +324,24 @@ func (s *ServiceController) patchStatus(service *v1.Service, previousStatus, new
 	return err
 }
 
-func (s *ServiceController) Run(stopCh <-chan struct{}, workers int) {
+func (s *ServiceController) Run() {
 	defer runtime.HandleCrash()
 	defer s.queue.Shutdown()
 
 	klog.Info("Starting service controller")
 	defer klog.Info("Shutting down service controller")
 
-	if !cache.WaitForCacheSync(stopCh, s.serviceListerSynced) || !cache.WaitForCacheSync(stopCh, s.nodeListerSynced) {
+	if !cache.WaitForCacheSync(s.stopCh, s.serviceListerSynced) || !cache.WaitForCacheSync(s.stopCh, s.nodeListerSynced) {
 		return
 	}
 
-	for i := 0; i < workers; i++ {
-		go wait.Until(s.worker, time.Second, stopCh)
+	for i := 0; i < s.numWorkers; i++ {
+		go s.queue.Run()
 	}
 
-	go wait.Until(s.nodeSyncLoop, nodeSyncPeriod, stopCh)
+	go wait.Until(s.nodeSyncLoop, nodeSyncPeriod, s.stopCh)
 
-	<-stopCh
+	<-s.stopCh
 }
 
 // processServiceCreateOrUpdate operates loadbalancers for the incoming service accordingly.
@@ -563,4 +653,12 @@ func portEqualForLB(x, y *v1.ServicePort) bool {
 	// TODO: Should we blank it out?  Or just check it anyway?
 
 	return true
+}
+
+func nodeNames(nodes []*v1.Node) sets.String {
+	ret := sets.NewString()
+	for _, node := range nodes {
+		ret.Insert(node.Name)
+	}
+	return ret
 }

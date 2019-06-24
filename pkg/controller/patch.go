@@ -17,13 +17,13 @@ limitations under the License.
 package controller
 
 import (
-"encoding/json"
-"fmt"
+	"encoding/json"
+	"fmt"
 
-v1 "k8s.io/api/core/v1"
-"k8s.io/apimachinery/pkg/types"
-"k8s.io/apimachinery/pkg/util/strategicpatch"
-v1core "k8s.io/client-go/kubernetes/typed/core/v1"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 )
 
 // patch patches service's Status or ObjectMeta given the origin and
