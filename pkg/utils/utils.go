@@ -298,6 +298,12 @@ func GetReadyNodeNames(lister listers.NodeLister) ([]string, error) {
 	return nodeNames, nil
 }
 
+// GetReadyNodes returns schedulable, ready nodes from the node lister
+// It also filters out masters and nodes excluded from load-balancing
+func GetReadyNodes(lister listers.NodeLister) ([]*api_v1.Node, error) {
+	return lister.ListWithPredicate(GetNodeConditionPredicate())
+}
+
 // NodeIsReady returns true if a node contains at least one condition of type "Ready"
 func NodeIsReady(node *api_v1.Node) bool {
 	for i := range node.Status.Conditions {
