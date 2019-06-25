@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"reflect"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/runtime"
@@ -38,7 +40,6 @@ import (
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	kubefeatures "k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/util/slice"
-	"reflect"
 )
 
 type loadBalancerOperation int
@@ -98,7 +99,7 @@ func NewServiceController(
 		return nil
 	}
 	s.balancer = balancer
-
+	s.cache = &serviceCache{serviceMap: make(map[string]*cachedService)}
 	ctx.ServiceInformer.AddEventHandlerWithResyncPeriod(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(cur interface{}) {
@@ -415,7 +416,7 @@ func (s *ServiceController) syncLoadBalancerIfNeeded(service *v1.Service, key st
 		op = ensureLoadBalancer
 		klog.V(2).Infof("Ensuring load balancer for service %s", key)
 		s.ctx.Recorder(service.Namespace).Event(service, v1.EventTypeNormal, "EnsuringLoadBalancer", "Ensuring load balancer")
-		if s.ctx.Cloud.AlphaFeatureGate.Enabled(string(kubefeatures.ServiceLoadBalancerFinalizer)) {
+		if s.ctx.Cloud.AlphaFeatureGate != nil && s.ctx.Cloud.AlphaFeatureGate.Enabled(string(kubefeatures.ServiceLoadBalancerFinalizer)) {
 			// Always try to add finalizer prior to load balancer creation.
 			// It will be a no-op if finalizer already exists.
 			// Note this also retrospectively puts on finalizer if the cluster
@@ -586,6 +587,10 @@ func (s *ServiceController) needsUpdate(oldService *v1.Service, newService *v1.S
 	}
 
 	return false
+}
+
+func (s *ServiceController) loadBalancerName(service *v1.Service) string {
+	return s.balancer.GetLoadBalancerName(nil, "", service)
 }
 
 func getPortsForLB(service *v1.Service) ([]*v1.ServicePort, error) {
