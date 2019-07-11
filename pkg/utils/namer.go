@@ -127,6 +127,10 @@ type NameComponents struct {
 	ClusterName, Resource, Metadata, LbName string
 }
 
+func (n *Namer) ClusterName() string {
+	return n.clusterName
+}
+
 // SetUID sets the UID/name of this cluster.
 func (n *Namer) SetUID(name string) {
 	n.nameLock.Lock()

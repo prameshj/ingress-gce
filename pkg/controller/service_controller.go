@@ -93,6 +93,7 @@ func NewServiceController(
 	s.queue = utils.NewPeriodicTaskQueue("service", "services", s.syncService)
 	s.stopCh = stopCh
 	s.numWorkers = numWorkers
+	s.clusterName = ctx.ClusterNamer.ClusterName()
 	balancer, ok := ctx.Cloud.LoadBalancer()
 	if !ok {
 		klog.Errorf("Failed to get GCE loadBalancer instance")
