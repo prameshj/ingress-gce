@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/ingress-gce/pkg/composite"
@@ -167,6 +168,37 @@ func ensureNetworkEndpointGroup(svcNamespace, svcName, negName, zone, negService
 		}
 	}
 	return nil
+}
+
+func toZonePrimaryIPEndpointMap(endpoints *apiv1.Endpoints, nodeLister listers.NodeLister, zoneGetter negtypes.ZoneGetter, randomize bool) (map[string]negtypes.NetworkEndpointSet, error) {
+	if randomize {
+		// Pick any nodes as subset
+		nodes, _ := nodeLister.ListWithPredicate(utils.GetNodeConditionPredicate())
+		return getSubsetPerZone(nodes, zoneGetter, "avcd")
+	}
+	zoneNetworkEndpointMap := map[string]negtypes.NetworkEndpointSet{}
+	// Follow endpoints and pick a subset
+	for _, ep := range endpoints.Subsets {
+		for _, addr := range ep.Addresses {
+			if addr.NodeName == nil {
+				klog.V(2).Infof("Endpoint %q in Endpoints %s/%s does not have an associated node. Skipping", addr.IP, endpoints.Namespace, endpoints.Name)
+				continue
+			}
+			if addr.TargetRef == nil {
+				klog.V(2).Infof("Endpoint %q in Endpoints %s/%s does not have an associated pod. Skipping", addr.IP, endpoints.Namespace, endpoints.Name)
+				continue
+			}
+			zone, err := zoneGetter.GetZoneForNode(*addr.NodeName)
+			if err != nil {
+				klog.Errorf("failed to retrieve associated zone of node %q: %v", *addr.NodeName, err)
+				continue
+			}
+			node, _ := nodeLister.Get(*addr.NodeName)
+			zoneNetworkEndpointMap[zone].Insert(negtypes.NetworkEndpoint{Node: *addr.NodeName, IP: utils.GetNodePrimaryIP(node)})
+
+		}
+	}
+	return zoneNetworkEndpointMap, nil
 }
 
 // toZoneNetworkEndpointMap translates addresses in endpoints object and Istio:DestinationRule subset into zone and endpoints map

@@ -24,6 +24,7 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/ingress-gce/pkg/composite"
@@ -54,6 +55,7 @@ type transactionSyncer struct {
 	podLister      cache.Indexer
 	serviceLister  cache.Indexer
 	endpointLister cache.Indexer
+	nodeLister     cache.Indexer
 	recorder       record.EventRecorder
 	cloud          negtypes.NetworkEndpointGroupCloud
 	zoneGetter     negtypes.ZoneGetter
@@ -130,9 +132,15 @@ func (s *transactionSyncer) syncInternal() error {
 		return nil
 	}
 
-	targetMap, endpointPodMap, err := toZoneNetworkEndpointMap(ep.(*apiv1.Endpoints), s.zoneGetter, s.PortTuple.Name, s.podLister, s.NegSyncerKey.SubsetLabels, s.NegSyncerKey.NegType)
-	if err != nil {
-		return err
+	var targetMap map[string]negtypes.NetworkEndpointSet
+	var endpointPodMap negtypes.EndpointPodMap
+
+	switch {
+	case s.NegSyncerKey.NegType == negtypes.VmPrimaryIpEndpointType:
+		nodeLister := listers.NewNodeLister(s.nodeLister)
+		targetMap, err = toZonePrimaryIPEndpointMap(ep.(*apiv1.Endpoints), nodeLister, s.zoneGetter, s.Randomize)
+	default:
+		targetMap, endpointPodMap, err = toZoneNetworkEndpointMap(ep.(*apiv1.Endpoints), s.zoneGetter, s.PortTuple.Name, s.podLister, s.NegSyncerKey.SubsetLabels, s.NegSyncerKey.NegType)
 	}
 
 	currentMap, err := retrieveExistingZoneNetworkEndpointMap(s.negName, s.zoneGetter, s.cloud, s.NegSyncerKey.GetAPIVersion())
@@ -145,6 +153,10 @@ func (s *transactionSyncer) syncInternal() error {
 	mergeTransactionIntoZoneEndpointMap(currentMap, s.transactions)
 	// Calculate the endpoints to add and delete to transform the current state to desire state
 	addEndpoints, removeEndpoints := calculateNetworkEndpointDifference(targetMap, currentMap)
+	if s.NegSyncerKey.NegType == negtypes.VmPrimaryIpEndpointType && s.Randomize {
+		// Make removals minimum since the traffic will be abruptly stopped.
+		klog.Infof("Removing endpoints %+v from VM_PRIMARY_IP NEG %s", removeEndpoints, s.negName)
+	}
 	// Calculate Pods that are already in the NEG
 	_, committedEndpoints := calculateNetworkEndpointDifference(addEndpoints, targetMap)
 	// Filter out the endpoints with existing transaction
@@ -156,7 +168,9 @@ func (s *transactionSyncer) syncInternal() error {
 	// filter out the endpoints that are in transaction
 	filterEndpointByTransaction(committedEndpoints, s.transactions)
 
-	s.commitPods(committedEndpoints, endpointPodMap)
+	if s.NegSyncerKey.NegType != negtypes.VmPrimaryIpEndpointType {
+		s.commitPods(committedEndpoints, endpointPodMap)
+	}
 
 	if len(addEndpoints) == 0 && len(removeEndpoints) == 0 {
 		klog.V(4).Infof("No endpoint change for %s/%s, skip syncing NEG. ", s.Namespace, s.Name)

@@ -36,6 +36,7 @@ import (
 	"k8s.io/ingress-gce/pkg/flags"
 	"k8s.io/ingress-gce/pkg/utils/common"
 	"k8s.io/klog"
+	"k8s.io/kubernetes/pkg/util/node"
 )
 
 const (
@@ -348,6 +349,15 @@ func GetNodeConditionPredicate() listers.NodeConditionPredicate {
 		}
 		return true
 	}
+}
+
+// GetNodePrimaryIP returns a primary internal IP address of the node.
+func GetNodePrimaryIP(inputNode *api_v1.Node) string {
+	ip, err := node.GetPreferredNodeAddress(inputNode, []api_v1.NodeAddressType{api_v1.NodeInternalIP})
+	if err != nil {
+		klog.Errorf("Failed to get IP address for node %s", inputNode.Name)
+	}
+	return ip
 }
 
 // NewNamespaceIndexer returns a new Indexer for use by SharedIndexInformers

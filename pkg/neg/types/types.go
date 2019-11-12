@@ -249,6 +249,10 @@ type NegSyncerKey struct {
 
 	// NegType is the type of the network endpoints in this NEG.
 	NegType NetworkEndpointType
+	// Randomize indicates that the endpoints of the NEG can be picked at random, rather
+	// than following the endpoints of the service. This only applies in the VM_PRIMARY_IP
+	// NEG
+	Randomize bool
 }
 
 func (key NegSyncerKey) String() string {
