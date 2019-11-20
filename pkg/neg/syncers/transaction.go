@@ -31,6 +31,7 @@ import (
 	"k8s.io/ingress-gce/pkg/neg/readiness"
 	negtypes "k8s.io/ingress-gce/pkg/neg/types"
 	"k8s.io/klog"
+	"strings"
 )
 
 type transactionSyncer struct {
@@ -143,7 +144,8 @@ func (s *transactionSyncer) syncInternal() error {
 	switch {
 	case s.NegSyncerKey.NegType == negtypes.VmPrimaryIpEndpointType:
 		nodeLister := listers.NewNodeLister(s.nodeLister)
-		targetMap, err = toZonePrimaryIPEndpointMap(ep.(*apiv1.Endpoints), nodeLister, s.zoneGetter, s.Randomize, currentMap)
+		serviceKey := strings.Join([]string{s.Name, s.Namespace}, "/")
+		targetMap, err = toZonePrimaryIPEndpointMap(ep.(*apiv1.Endpoints), nodeLister, s.zoneGetter, s.Randomize, currentMap, serviceKey)
 	default:
 		targetMap, endpointPodMap, err = toZoneNetworkEndpointMap(ep.(*apiv1.Endpoints), s.zoneGetter, s.PortTuple.Name, s.podLister, s.NegSyncerKey.SubsetLabels, s.NegSyncerKey.NegType)
 	}
