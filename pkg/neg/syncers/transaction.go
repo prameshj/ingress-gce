@@ -132,20 +132,20 @@ func (s *transactionSyncer) syncInternal() error {
 		return nil
 	}
 
+	currentMap, err := retrieveExistingZoneNetworkEndpointMap(s.negName, s.zoneGetter, s.cloud, s.NegSyncerKey.GetAPIVersion())
+	if err != nil {
+		return err
+	}
+
 	var targetMap map[string]negtypes.NetworkEndpointSet
 	var endpointPodMap negtypes.EndpointPodMap
 
 	switch {
 	case s.NegSyncerKey.NegType == negtypes.VmPrimaryIpEndpointType:
 		nodeLister := listers.NewNodeLister(s.nodeLister)
-		targetMap, err = toZonePrimaryIPEndpointMap(ep.(*apiv1.Endpoints), nodeLister, s.zoneGetter, s.Randomize)
+		targetMap, err = toZonePrimaryIPEndpointMap(ep.(*apiv1.Endpoints), nodeLister, s.zoneGetter, s.Randomize, currentMap)
 	default:
 		targetMap, endpointPodMap, err = toZoneNetworkEndpointMap(ep.(*apiv1.Endpoints), s.zoneGetter, s.PortTuple.Name, s.podLister, s.NegSyncerKey.SubsetLabels, s.NegSyncerKey.NegType)
-	}
-
-	currentMap, err := retrieveExistingZoneNetworkEndpointMap(s.negName, s.zoneGetter, s.cloud, s.NegSyncerKey.GetAPIVersion())
-	if err != nil {
-		return err
 	}
 
 	// Merge the current state from cloud with the transaction table together

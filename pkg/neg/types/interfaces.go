@@ -71,6 +71,7 @@ type NegSyncerManager interface {
 	StopSyncer(namespace, name string)
 	// Sync signals all syncers related to the service to sync. This call is asynchronous.
 	Sync(namespace, name string)
+	SyncNodes()
 	// GC garbage collects network endpoint group and syncers
 	GC() error
 	// ShutDown shuts down the manager

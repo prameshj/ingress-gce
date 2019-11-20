@@ -77,6 +77,8 @@ type Controller struct {
 	serviceQueue workqueue.RateLimitingInterface
 	// endpointQueue takes endpoint key as work item. Endpoint key with format "namespace/name".
 	endpointQueue workqueue.RateLimitingInterface
+	// serviceQueue takes service key as work item. Service key with format "namespace/name".
+	nodeQueue workqueue.RateLimitingInterface
 
 	// destinationRuleQueue takes Istio DestinationRule key as work item. DestinationRule key with format "namespace/name"
 	destinationRuleQueue workqueue.RateLimitingInterface
@@ -194,6 +196,16 @@ func NewController(
 		},
 	})
 
+	ctx.NodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			node := obj.(*apiv1.Node)
+			negController.enqueueNode(node)
+		},
+		DeleteFunc: func(obj interface{}) {
+			node := obj.(*apiv1.Node)
+			negController.enqueueNode(node)
+		},
+	})
 	if ctx.EnableASMConfigMap {
 		cmconfig := ctx.ASMConfigController.GetConfig()
 		if cmconfig.EnableASM {
@@ -229,6 +241,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 
 	go wait.Until(c.serviceWorker, time.Second, stopCh)
 	go wait.Until(c.endpointWorker, time.Second, stopCh)
+	go wait.Until(c.nodeWorker, time.Second, stopCh)
 	go func() {
 		// Wait for gcPeriod to run the first GC
 		// This is to make sure that all services are fully processed before running GC.
@@ -269,6 +282,30 @@ func (c *Controller) endpointWorker() {
 			c.endpointQueue.Done(key)
 		}()
 	}
+}
+
+func (c *Controller) nodeWorker() {
+	for {
+		func() {
+			key, quit := c.nodeQueue.Get()
+			if quit {
+				return
+			}
+			c.processNode()
+			c.nodeQueue.Done(key)
+		}()
+	}
+}
+
+// processNode finds the related syncers and signal it to sync
+// use a semaphore approach where all vm_ip syncers can wake up.
+func (c *Controller) processNode() {
+	defer func() {
+		// This should be some other metric, since this is a node sync
+		now := c.syncTracker.Track()
+		metrics.LastSyncTimestamp.WithLabelValues().Set(float64(now.UTC().UnixNano()))
+	}()
+	c.manager.SyncNodes()
 }
 
 // processEndpoint finds the related syncers and signal it to sync
@@ -599,6 +636,15 @@ func (c *Controller) enqueueEndpoint(obj interface{}) {
 		return
 	}
 	c.endpointQueue.Add(key)
+}
+
+func (c *Controller) enqueueNode(obj interface{}) {
+	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+	if err != nil {
+		klog.Errorf("Failed to generate endpoint key: %v", err)
+		return
+	}
+	c.nodeQueue.Add(key)
 }
 
 func (c *Controller) enqueueService(obj interface{}) {

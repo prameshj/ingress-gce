@@ -34,6 +34,12 @@ const (
 type NodeInfo struct {
 	index      int
 	hashedName string
+	skip       bool
+}
+
+func getHashedName(nodeName, salt string) string {
+	hashSum := sha256.Sum256([]byte(nodeName + ":" + salt))
+	return hex.EncodeToString(hashSum[:])
 }
 
 // PickSubsets takes a list of nodes, hash salt, count and retuns a
@@ -48,8 +54,7 @@ func PickSubsets(nodes []*v1.Node, salt string, count int) []*v1.Node {
 	subsets := make([]*v1.Node, 0, count)
 	info := make([]*NodeInfo, len(nodes))
 	for i, node := range nodes {
-		hashSum := sha256.Sum256([]byte(node.Name + ":" + salt))
-		info[i] = &NodeInfo{i, hex.EncodeToString(hashSum[:])}
+		info[i] = &NodeInfo{i, getHashedName(node.Name, salt), false}
 	}
 	// sort alphabetically, based on the hashed string
 	sort.Slice(info, func(i, j int) bool {
@@ -64,7 +69,48 @@ func PickSubsets(nodes []*v1.Node, salt string, count int) []*v1.Node {
 	return subsets
 }
 
-func getSubsetPerZone(nodes []*v1.Node, zoneGetter negtypes.ZoneGetter, svcID string) (map[string]negtypes.NetworkEndpointSet, error) {
+// PickSubsetsNoRemovals ensures that there are no node removals from current subset unless the node no longer exists.
+func PickSubsetsNoRemovals(nodes []*v1.Node, salt string, count int, current []negtypes.NetworkEndpoint) []*v1.Node {
+	if len(nodes) < count {
+		return nodes
+	}
+	subset := make([]*v1.Node, 0, count)
+	info := make([]*NodeInfo, len(nodes))
+	for i, node := range nodes {
+		info[i] = &NodeInfo{i, getHashedName(node.Name, salt), false}
+	}
+	// sort alphabetically, based on the hashed string
+	sort.Slice(info, func(i, j int) bool {
+		return info[i].hashedName < info[j].hashedName
+	})
+	// Pick all nodes from existing subset if still available.
+	for _, ep := range current {
+		for _, nodeInfo := range info {
+			curHashName := getHashedName(ep.Node, salt)
+			if nodeInfo.hashedName == curHashName {
+				subset = append(subset, nodes[nodeInfo.index])
+				nodeInfo.skip = true
+			} else if nodeInfo.hashedName > curHashName {
+				break
+			}
+		}
+	}
+	if len(subset) >= count {
+		subset = subset[:count+1]
+		return subset
+	}
+	for _, val := range info {
+		if val.skip {
+			continue
+		}
+		subset = append(subset, nodes[val.index])
+		if len(subset) == count {
+			break
+		}
+	}
+	return subset
+}
+func getSubsetPerZone(nodes []*v1.Node, zoneGetter negtypes.ZoneGetter, svcID string, currentMap map[string]negtypes.NetworkEndpointSet) (map[string]negtypes.NetworkEndpointSet, error) {
 	result := make(map[string]negtypes.NetworkEndpointSet)
 	zoneMap := make(map[string][]*v1.Node)
 	for _, node := range nodes {
@@ -78,9 +124,16 @@ func getSubsetPerZone(nodes []*v1.Node, zoneGetter negtypes.ZoneGetter, svcID st
 	// If there are fewer nodes in one zone, more nodes are NOT picked from other zones.
 	// TODO fix this.
 	perZoneSubset := maxSubsetSize / len(zoneMap)
+	var currentList []negtypes.NetworkEndpoint
+
 	for zone, nodesInZone := range zoneMap {
 		result[zone] = negtypes.NewNetworkEndpointSet()
-		subset := PickSubsets(nodesInZone, svcID, perZoneSubset)
+		if zmap, ok := currentMap[zone]; ok {
+			currentList = zmap.List()
+		} else {
+			currentList = nil
+		}
+		subset := PickSubsetsNoRemovals(nodesInZone, svcID, perZoneSubset, currentList)
 		for _, node := range subset {
 			result[zone].Insert(negtypes.NetworkEndpoint{Node: node.Name, IP: utils.GetNodePrimaryIP(node)})
 		}

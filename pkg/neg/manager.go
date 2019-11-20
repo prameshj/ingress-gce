@@ -64,6 +64,9 @@ type syncerManager struct {
 	// syncerMap stores the NEG syncer
 	// key consists of service namespace, name and targetPort. Value is the corresponding syncer.
 	syncerMap map[negtypes.NegSyncerKey]negtypes.NegSyncer
+	// nodeSyncers consists of all syncers that are managing VM_IP NEGs. These need to sync upon
+	// node adds/deletes.
+	nodeSyncers []negtypes.NegSyncer
 	// reflector handles NEG readiness gate and conditions for pods in NEG.
 	reflector readiness.Reflector
 }
@@ -167,6 +170,18 @@ func (manager *syncerManager) Sync(namespace, name string) {
 					syncer.Sync()
 				}
 			}
+		}
+	}
+}
+
+// SyncNodes signals all VM_IP syncers to sync.
+func (manager *syncerManager) SyncNodes() {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for _, syncer := range manager.nodeSyncers {
+		if !syncer.IsStopped() {
+			// TODO check if syncing in parallel is ok
+			go syncer.Sync()
 		}
 	}
 }

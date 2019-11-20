@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"k8s.io/apimachinery/pkg/labels"
 	"net/http"
 	"strings"
 
@@ -349,6 +350,19 @@ func GetNodeConditionPredicate() listers.NodeConditionPredicate {
 		}
 		return true
 	}
+}
+
+func LookupNode(lister listers.NodeLister, name string) bool {
+	nodes, err := lister.List(labels.Everything())
+	if err != nil {
+		return false
+	}
+	for _, n := range nodes {
+		if n.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // GetNodePrimaryIP returns a primary internal IP address of the node.

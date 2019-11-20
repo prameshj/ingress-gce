@@ -170,11 +170,11 @@ func ensureNetworkEndpointGroup(svcNamespace, svcName, negName, zone, negService
 	return nil
 }
 
-func toZonePrimaryIPEndpointMap(endpoints *apiv1.Endpoints, nodeLister listers.NodeLister, zoneGetter negtypes.ZoneGetter, randomize bool) (map[string]negtypes.NetworkEndpointSet, error) {
+func toZonePrimaryIPEndpointMap(endpoints *apiv1.Endpoints, nodeLister listers.NodeLister, zoneGetter negtypes.ZoneGetter, randomize bool, currentMap map[string]negtypes.NetworkEndpointSet) (map[string]negtypes.NetworkEndpointSet, error) {
 	if randomize {
 		// Pick any nodes as subset
 		nodes, _ := nodeLister.ListWithPredicate(utils.GetNodeConditionPredicate())
-		return getSubsetPerZone(nodes, zoneGetter, "avcd")
+		return getSubsetPerZone(nodes, zoneGetter, "avcd", currentMap)
 	}
 	zoneNetworkEndpointMap := map[string]negtypes.NetworkEndpointSet{}
 	// Follow endpoints and pick a subset
