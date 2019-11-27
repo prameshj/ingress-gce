@@ -307,6 +307,8 @@ func (c *Controller) processService(key string) error {
 		metrics.LastSyncTimestamp.WithLabelValues().Set(float64(now.UTC().UnixNano()))
 	}()
 
+	var crash *int
+	klog.Infof("Going to crash - %d", *crash)
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
