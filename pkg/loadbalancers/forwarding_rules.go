@@ -227,28 +227,15 @@ func (l *L4) ensureForwardingRule(loadBalancerName, bsLink string, options gce.I
 	}
 	subnetworkURL := l.cloud.SubnetworkURL()
 
-	if !l.cloud.AlphaFeatureGate.Enabled(gce.AlphaFeatureILBCustomSubnet) {
-		if options.SubnetName != "" {
-			l.recorder.Event(l.Service, v1.EventTypeWarning, "ILBCustomSubnetOptionIgnored", "Internal LoadBalancer CustomSubnet options ignored as the feature gate is disabled.")
-			options.SubnetName = ""
-		}
-	}
-	if l.cloud.AlphaFeatureGate.Enabled(gce.AlphaFeatureILBCustomSubnet) {
-		// If this feature is enabled, changes to subnet annotation will be
-		// picked up and reflected in the forwarding rule.
-		// Removing the annotation will set the forwarding rule to use the default subnet.
-		if options.SubnetName != "" {
-			subnetKey := *key
-			subnetKey.Name = options.SubnetName
-			subnetworkURL = cloud.SelfLink(meta.VersionGA, l.cloud.ProjectID(), "subnetworks", &subnetKey)
-		}
-	} else {
-		// TODO(84885) remove this once ILBCustomSubnet goes beta.
-		if existingFwdRule != nil && existingFwdRule.Subnetwork != "" {
-			// If the ILB already exists, continue using the subnet that it's already using.
-			// This is to support existing ILBs that were setup using the wrong subnet - https://github.com/kubernetes/kubernetes/pull/57861
-			subnetworkURL = existingFwdRule.Subnetwork
-		}
+	// Changes to subnet annotation will be picked up and reflected in the forwarding rule.
+	// Removing the annotation will set the forwarding rule to use the default subnet.
+	// If the ILB already exists, setting this annotation will overwrite the existing subnet in the forwarding rule.
+	// To support existing ILBs that were setup using the wrong subnet - https://github.com/kubernetes/kubernetes/pull/57861
+	// the user needs to edit the service spec and set the subnet name annotation.
+	if options.SubnetName != "" {
+		subnetKey := *key
+		subnetKey.Name = options.SubnetName
+		subnetworkURL = cloud.SelfLink(meta.VersionGA, l.cloud.ProjectID(), "subnetworks", &subnetKey)
 	}
 	// Determine IP which will be used for this LB. If no forwarding rule has been established
 	// or specified in the Service spec, then requestedIP = "".
