@@ -676,37 +676,49 @@ func TestMakeEndpointBatch(t *testing.T) {
 		desc        string
 		endpointNum int
 		leftOverNum int
+		negType     negtypes.NetworkEndpointType
 	}{
 		{
 			"input with zero endpoints",
 			0,
 			0,
+			negtypes.VmIpPortEndpointType,
 		},
 		{
 			"input with 1 endpoints",
 			1,
 			0,
+			negtypes.VmIpPortEndpointType,
 		},
 		{
 			"input with 500 endpoints",
 			500,
 			0,
+			negtypes.VmIpPortEndpointType,
 		},
 		{
 			"input with 501 endpoints",
 			501,
 			1,
+			negtypes.VmIpPortEndpointType,
 		},
 		{
 			"input with 1000 endpoints",
 			1000,
 			500,
+			negtypes.VmIpPortEndpointType,
+		},
+		{
+			"input with 1000 endpoints",
+			1000,
+			500,
+			negtypes.VmIpPortEndpointType,
 		},
 	}
 
 	for _, tc := range testCases {
 		endpointSet, endpointMap := genTestEndpoints(tc.endpointNum)
-		out, err := makeEndpointBatch(endpointSet)
+		out, err := makeEndpointBatch(endpointSet, tc.negType)
 
 		if err != nil {
 			t.Errorf("Expect err = nil, but got %v", err)

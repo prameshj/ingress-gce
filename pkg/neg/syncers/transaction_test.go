@@ -923,7 +923,7 @@ func unionEndpointMap(m1, m2 negtypes.EndpointPodMap) negtypes.EndpointPodMap {
 }
 
 func generateEndpointBatch(endpointSet negtypes.NetworkEndpointSet) map[negtypes.NetworkEndpoint]*composite.NetworkEndpoint {
-	ret, _ := makeEndpointBatch(endpointSet)
+	ret, _ := makeEndpointBatch(endpointSet, negtypes.VmIpPortEndpointType)
 	return ret
 }
 
