@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	befeatures "k8s.io/ingress-gce/pkg/backends/features"
 	"k8s.io/ingress-gce/pkg/composite"
+	"k8s.io/ingress-gce/pkg/neg/types"
 	"k8s.io/ingress-gce/pkg/utils"
 	"k8s.io/legacy-cloud-providers/gce"
 )
@@ -98,9 +99,13 @@ func getBackendsForNEGs(negs []*composite.NetworkEndpointGroup) []*composite.Bac
 	var backends []*composite.Backend
 	for _, neg := range negs {
 		b := &composite.Backend{
-			Group:              neg.SelfLink,
-			BalancingMode:      string(Rate),
-			MaxRatePerEndpoint: maxRPS,
+			Group: neg.SelfLink,
+		}
+		if neg.NetworkEndpointType == string(types.VmIpEndpointType) {
+			b.BalancingMode = string(Connections)
+		} else {
+			b.BalancingMode = string(Rate)
+			b.MaxRatePerEndpoint = maxRPS
 		}
 		backends = append(backends, b)
 	}

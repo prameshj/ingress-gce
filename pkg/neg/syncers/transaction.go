@@ -215,7 +215,7 @@ func (s *transactionSyncer) syncNetworkEndpoints(addEndpoints, removeEndpoints m
 				continue
 			}
 
-			batch, err := makeEndpointBatch(endpointSet)
+			batch, err := makeEndpointBatch(endpointSet, s.NegType)
 			if err != nil {
 				return err
 			}
