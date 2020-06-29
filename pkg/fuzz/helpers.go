@@ -21,12 +21,13 @@ import (
 	"strconv"
 	"strings"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/api/networking/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/ingress-gce/pkg/annotations"
-	backendconfig "k8s.io/ingress-gce/pkg/apis/backendconfig/v1beta1"
+	backendconfig "k8s.io/ingress-gce/pkg/apis/backendconfig/v1"
+	frontendconfig "k8s.io/ingress-gce/pkg/apis/frontendconfig/v1beta1"
 	backendconfigutil "k8s.io/ingress-gce/pkg/backendconfig"
 	translatorutil "k8s.io/ingress-gce/pkg/controller/translator"
 )
@@ -292,6 +293,15 @@ func (i *IngressBuilder) SetAllowHttp(val bool) *IngressBuilder {
 	return i
 }
 
+// SetFrontendConfig sets the FrontendConfig annotation on the ingress
+func (i *IngressBuilder) SetFrontendConfig(name string) *IngressBuilder {
+	if i.ing.Annotations == nil {
+		i.ing.Annotations = make(map[string]string)
+	}
+	i.ing.Annotations[annotations.FrontendConfigKey] = name
+	return i
+}
+
 // BackendConfigBuilder is syntactic sugar for creating BackendConfig specs for testing
 // purposes.
 //
@@ -394,10 +404,76 @@ func (b *BackendConfigBuilder) SetConnectionDrainingTimeout(timeout int64) *Back
 	return b
 }
 
+// AddCustomRequestHeader adds a custom request header to the BackendConfig.
 func (b *BackendConfigBuilder) AddCustomRequestHeader(header string) *BackendConfigBuilder {
 	if b.backendConfig.Spec.CustomRequestHeaders == nil {
 		b.backendConfig.Spec.CustomRequestHeaders = &backendconfig.CustomRequestHeadersConfig{}
 	}
 	b.backendConfig.Spec.CustomRequestHeaders.Headers = append(b.backendConfig.Spec.CustomRequestHeaders.Headers, header)
 	return b
+}
+
+// SetHealthCheckPath adds a health check path override.
+func (b *BackendConfigBuilder) SetHealthCheckPath(path string) *BackendConfigBuilder {
+	if b.backendConfig.Spec.HealthCheck == nil {
+		b.backendConfig.Spec.HealthCheck = &backendconfig.HealthCheckConfig{}
+	}
+	b.backendConfig.Spec.HealthCheck.RequestPath = &path
+	return b
+}
+
+// EnableLogging enables or disables access logging.
+func (b *BackendConfigBuilder) EnableLogging(enabled bool) *BackendConfigBuilder {
+	if b.backendConfig.Spec.Logging == nil {
+		b.backendConfig.Spec.Logging = &backendconfig.LogConfig{}
+	}
+	b.backendConfig.Spec.Logging.Enable = enabled
+	return b
+}
+
+// SetSampleRate sets log sampling rate.
+func (b *BackendConfigBuilder) SetSampleRate(sampleRate *float64) *BackendConfigBuilder {
+	if b.backendConfig.Spec.Logging == nil {
+		b.backendConfig.Spec.Logging = &backendconfig.LogConfig{}
+	}
+	b.backendConfig.Spec.Logging.SampleRate = sampleRate
+	return b
+}
+
+// FrontendConfigBuilder is syntactic sugar for creating FrontendConfig specs for testing
+// purposes.
+//
+//   frontendConfig := NewFrontendConfigBuilder("ns1", "name1").Build()
+type FrontendConfigBuilder struct {
+	frontendConfig *frontendconfig.FrontendConfig
+}
+
+// NewFrontendConfigBuilder instantiates a new FrontendConfig.
+func NewFrontendConfigBuilder(ns, name string) *FrontendConfigBuilder {
+	var fc = &frontendconfig.FrontendConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+		},
+		Spec: frontendconfig.FrontendConfigSpec{},
+	}
+	return &FrontendConfigBuilder{frontendConfig: fc}
+}
+
+// NewFrontendConfigBuilderFromExisting creates a FrontendConfigBuilder from an existing
+// FrontendConfig object. The FrontendConfigBuilder object will be copied.
+func NewFrontendConfigBuilderFromExisting(f *frontendconfig.FrontendConfig) *FrontendConfigBuilder {
+	return &FrontendConfigBuilder{frontendConfig: f.DeepCopy()}
+}
+
+// Build returns a constructed FrontendConfig. The FrontendConfig is a copy, so the Builder
+// can be reused to construct multiple FrontendConfig definitions.
+func (f *FrontendConfigBuilder) Build() *frontendconfig.FrontendConfig {
+	return f.frontendConfig.DeepCopy()
+}
+
+// SetSslPolicy Sets ths SslPolicy on the FrontendConfig.
+func (f *FrontendConfigBuilder) SetSslPolicy(policy string) *FrontendConfigBuilder {
+	f.frontendConfig.Spec.SslPolicy = &policy
+	return f
 }

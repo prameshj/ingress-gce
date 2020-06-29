@@ -14,12 +14,17 @@ limitations under the License.
 package common
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/api/networking/v1beta1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes"
+	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	client "k8s.io/client-go/kubernetes/typed/networking/v1beta1"
 	"k8s.io/klog"
 	"k8s.io/kubernetes/pkg/util/slice"
@@ -63,10 +68,8 @@ func EnsureFinalizer(ing *v1beta1.Ingress, ingClient client.IngressInterface, fi
 	updated := ing.DeepCopy()
 	if needToAddFinalizer(ing.ObjectMeta, finalizerKey) {
 		updated.ObjectMeta.Finalizers = append(updated.ObjectMeta.Finalizers, finalizerKey)
-		// TODO(smatti): Make this optimistic concurrency control compliant on write.
-		// Refer: https://github.com/eBay/Kubernetes/blob/master/docs/devel/api-conventions.md#concurrency-control-and-consistency
-		if _, err := ingClient.Update(updated); err != nil {
-			return nil, fmt.Errorf("error updating Ingress %s/%s: %v", ing.Namespace, ing.Name, err)
+		if _, err := PatchIngressObjectMetadata(ingClient, ing, updated.ObjectMeta); err != nil {
+			return nil, fmt.Errorf("error patching Ingress %s/%s: %v", ing.Namespace, ing.Name, err)
 		}
 		klog.V(2).Infof("Added finalizer %q for Ingress %s/%s", finalizerKey, ing.Namespace, ing.Name)
 	}
@@ -81,10 +84,10 @@ func needToAddFinalizer(m meta_v1.ObjectMeta, key string) bool {
 // EnsureDeleteFinalizer ensures that the specified finalizer is deleted from given Ingress.
 func EnsureDeleteFinalizer(ing *v1beta1.Ingress, ingClient client.IngressInterface, finalizerKey string) error {
 	if HasGivenFinalizer(ing.ObjectMeta, finalizerKey) {
-		updated := ing.DeepCopy()
-		updated.ObjectMeta.Finalizers = slice.RemoveString(updated.ObjectMeta.Finalizers, finalizerKey, nil)
-		if _, err := ingClient.Update(updated); err != nil {
-			return fmt.Errorf("error updating Ingress %s/%s: %v", ing.Namespace, ing.Name, err)
+		updatedObjectMeta := ing.ObjectMeta.DeepCopy()
+		updatedObjectMeta.Finalizers = slice.RemoveString(updatedObjectMeta.Finalizers, finalizerKey, nil)
+		if _, err := PatchIngressObjectMetadata(ingClient, ing, *updatedObjectMeta); err != nil {
+			return fmt.Errorf("error patching Ingress %s/%s: %v", ing.Namespace, ing.Name, err)
 		}
 		klog.V(2).Infof("Removed finalizer %q for Ingress %s/%s", finalizerKey, ing.Namespace, ing.Name)
 	}
@@ -92,7 +95,7 @@ func EnsureDeleteFinalizer(ing *v1beta1.Ingress, ingClient client.IngressInterfa
 }
 
 // EnsureServiceFinalizer patches the service to add finalizer.
-func EnsureServiceFinalizer(service *v1.Service, key string, kubeClient kubernetes.Interface) error {
+func EnsureServiceFinalizer(service *corev1.Service, key string, kubeClient kubernetes.Interface) error {
 	if HasGivenFinalizer(service.ObjectMeta, key) {
 		return nil
 	}
@@ -102,12 +105,11 @@ func EnsureServiceFinalizer(service *v1.Service, key string, kubeClient kubernet
 	updated.ObjectMeta.Finalizers = append(updated.ObjectMeta.Finalizers, key)
 
 	klog.V(2).Infof("Adding finalizer %s to service %s/%s", key, updated.Namespace, updated.Name)
-	_, err := kubeClient.CoreV1().Services(updated.Namespace).Update(updated)
-	return err
+	return patchServiceFinalizer(kubeClient.CoreV1().Services(updated.Namespace), service, updated)
 }
 
 // removeFinalizer patches the service to remove finalizer.
-func EnsureDeleteServiceFinalizer(service *v1.Service, key string, kubeClient kubernetes.Interface) error {
+func EnsureDeleteServiceFinalizer(service *corev1.Service, key string, kubeClient kubernetes.Interface) error {
 	if !HasGivenFinalizer(service.ObjectMeta, key) {
 		return nil
 	}
@@ -117,6 +119,27 @@ func EnsureDeleteServiceFinalizer(service *v1.Service, key string, kubeClient ku
 	updated.ObjectMeta.Finalizers = slice.RemoveString(updated.ObjectMeta.Finalizers, key, nil)
 
 	klog.V(2).Infof("Removing finalizer from service %s/%s", updated.Namespace, updated.Name)
-	_, err := kubeClient.CoreV1().Services(updated.Namespace).Update(updated)
+	return patchServiceFinalizer(kubeClient.CoreV1().Services(updated.Namespace), service, updated)
+}
+
+func patchServiceFinalizer(sc coreclient.ServiceInterface, oldSvc, newSvc *corev1.Service) error {
+	svcKey := fmt.Sprintf("%s/%s", oldSvc.Namespace, oldSvc.Name)
+	oldData, err := json.Marshal(oldSvc)
+	if err != nil {
+		return fmt.Errorf("failed to Marshal oldData for service %s: %v", svcKey, err)
+	}
+
+	newData, err := json.Marshal(newSvc)
+	if err != nil {
+		return fmt.Errorf("failed to Marshal newData for service %s: %v", svcKey, err)
+	}
+
+	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, corev1.Service{})
+	if err != nil {
+		return fmt.Errorf("failed to create TwoWayMergePatch for service %s: %v", svcKey, err)
+	}
+
+	klog.V(3).Infof("Patch bytes for service %s: %s", svcKey, patchBytes)
+	_, err = sc.Patch(context.TODO(), oldSvc.Name, types.StrategicMergePatchType, patchBytes, meta_v1.PatchOptions{}, "status")
 	return err
 }

@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	context2 "context"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -285,7 +286,7 @@ func NewLoadBalancerController(
 
 	// Register health check on controller context.
 	ctx.AddHealthCheck("ingress", func() error {
-		_, err := backendPool.Get("foo", meta.VersionGA, meta.Global)
+		_, err := backendPool.Get("k8s-ingress-svc-acct-permission-check-probe", meta.VersionGA, meta.Global)
 
 		// If this container is scheduled on a node without compute/rw it is
 		// effectively useless, but it is healthy. Reporting it as unhealthy
@@ -302,6 +303,7 @@ func NewLoadBalancerController(
 	return &lbc
 }
 
+// Init the controller.
 func (lbc *LoadBalancerController) Init() {
 	// TODO(rramkumar): Try to get rid of this "Init".
 	lbc.instancePool.Init(lbc.Translator)
@@ -357,36 +359,14 @@ func (lbc *LoadBalancerController) SyncBackends(state interface{}) error {
 	}
 	ingSvcPorts := syncState.urlMap.AllServicePorts()
 
-	// Create instance groups and set named ports.
-	igs, err := lbc.instancePool.EnsureInstanceGroupsAndPorts(lbc.ctx.ClusterNamer.InstanceGroup(), nodePorts(ingSvcPorts))
-	if err != nil {
-		return err
-	}
-
-	nodeNames, err := utils.GetReadyNodeNames(listers.NewNodeLister(lbc.nodeLister))
-	if err != nil {
-		return err
-	}
-	// Add/remove instances to the instance groups.
-	if err = lbc.instancePool.Sync(nodeNames); err != nil {
-		return err
-	}
-
-	// TODO: Remove this after deprecation
-	ing := syncState.ing
-	if utils.IsGCEMultiClusterIngress(syncState.ing) {
-		// Add instance group names as annotation on the ingress and return.
-		if ing.Annotations == nil {
-			ing.Annotations = map[string]string{}
-		}
-		if err = setInstanceGroupsAnnotation(ing.Annotations, igs); err != nil {
+	// Only sync instance group when IG is used for this ingress
+	if len(nodePorts(ingSvcPorts)) > 0 {
+		if err := lbc.syncInstanceGroup(syncState.ing, ingSvcPorts); err != nil {
+			klog.Errorf("Failed to sync instance group for ingress %v: %v", syncState.ing, err)
 			return err
 		}
-		if err = updateAnnotations(lbc.ctx.KubeClient, ing.Name, ing.Namespace, ing.Annotations); err != nil {
-			return err
-		}
-		// This short-circuit will stop the syncer from moving to next step.
-		return ingsync.ErrSkipBackendsSync
+	} else {
+		klog.V(2).Infof("Skip syncing instance groups for ingress %v/%v", syncState.ing.Namespace, syncState.ing.Name)
 	}
 
 	// Sync the backends
@@ -396,6 +376,10 @@ func (lbc *LoadBalancerController) SyncBackends(state interface{}) error {
 
 	// Get the zones our groups live in.
 	zones, err := lbc.Translator.ListZones()
+	if err != nil {
+		klog.Errorf("lbc.Translator.ListZones() = %v", err)
+		return err
+	}
 	var groupKeys []backends.GroupKey
 	for _, zone := range zones {
 		groupKeys = append(groupKeys, backends.GroupKey{Zone: zone})
@@ -416,6 +400,43 @@ func (lbc *LoadBalancerController) SyncBackends(state interface{}) error {
 		}
 	}
 
+	return nil
+}
+
+// syncInstanceGroup creates instance groups, syncs instances, sets named ports and updates instance group annotation
+func (lbc *LoadBalancerController) syncInstanceGroup(ing *v1beta1.Ingress, ingSvcPorts []utils.ServicePort) error {
+	nodePorts := nodePorts(ingSvcPorts)
+	klog.V(2).Infof("Syncing Instance Group for ingress %v/%v with nodeports %v", ing.Namespace, ing.Name, nodePorts)
+	igs, err := lbc.instancePool.EnsureInstanceGroupsAndPorts(lbc.ctx.ClusterNamer.InstanceGroup(), nodePorts)
+	if err != nil {
+		return err
+	}
+
+	nodeNames, err := utils.GetReadyNodeNames(listers.NewNodeLister(lbc.nodeLister))
+	if err != nil {
+		return err
+	}
+	// Add/remove instances to the instance groups.
+	if err = lbc.instancePool.Sync(nodeNames); err != nil {
+		return err
+	}
+
+	// TODO: Remove this after deprecation
+	if utils.IsGCEMultiClusterIngress(ing) {
+		klog.Warningf("kubemci is used for ingress %v", ing)
+		// Add instance group names as annotation on the ingress and return.
+		if ing.Annotations == nil {
+			ing.Annotations = map[string]string{}
+		}
+		if err = setInstanceGroupsAnnotation(ing.Annotations, igs); err != nil {
+			return err
+		}
+		if err = updateAnnotations(lbc.ctx.KubeClient, ing.Name, ing.Namespace, ing.Annotations); err != nil {
+			return err
+		}
+		// This short-circuit will stop the syncer from moving to next step.
+		return ingsync.ErrSkipBackendsSync
+	}
 	return nil
 }
 
@@ -591,11 +612,11 @@ func (lbc *LoadBalancerController) updateIngressStatus(l7 *loadbalancers.L7, ing
 
 	// Update IP through update/status endpoint
 	ip := l7.GetIP()
-	currIng, err := ingClient.Get(ing.Name, metav1.GetOptions{})
+	currIng, err := ingClient.Get(context2.TODO(), ing.Name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
-	currIng.Status = v1beta1.IngressStatus{
+	updatedIngStatus := v1beta1.IngressStatus{
 		LoadBalancer: apiv1.LoadBalancerStatus{
 			Ingress: []apiv1.LoadBalancerIngress{
 				{IP: ip},
@@ -608,7 +629,8 @@ func (lbc *LoadBalancerController) updateIngressStatus(l7 *loadbalancers.L7, ing
 			// TODO: If this update fails it's probably resource version related,
 			// which means it's advantageous to retry right away vs requeuing.
 			klog.Infof("Updating loadbalancer %v/%v with IP %v", ing.Namespace, ing.Name, ip)
-			if _, err := ingClient.UpdateStatus(currIng); err != nil {
+			if _, err := common.PatchIngressStatus(ingClient, currIng, updatedIngStatus); err != nil {
+				klog.Errorf("PatchIngressStatus(%s/%s) failed: %v", currIng.Namespace, currIng.Name, err)
 				return err
 			}
 			lbc.ctx.Recorder(ing.Namespace).Eventf(currIng, apiv1.EventTypeNormal, "CREATE", "ip: %v", ip)
@@ -664,14 +686,16 @@ func (lbc *LoadBalancerController) toRuntimeInfo(ing *v1beta1.Ingress, urlMap *u
 
 func updateAnnotations(client kubernetes.Interface, name, namespace string, annotations map[string]string) error {
 	ingClient := client.NetworkingV1beta1().Ingresses(namespace)
-	currIng, err := ingClient.Get(name, metav1.GetOptions{})
+	currIng, err := ingClient.Get(context2.TODO(), name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
 	if !reflect.DeepEqual(currIng.Annotations, annotations) {
 		klog.V(3).Infof("Updating annotations of %v/%v", namespace, name)
-		currIng.Annotations = annotations
-		if _, err := ingClient.Update(currIng); err != nil {
+		updatedObjectMeta := currIng.ObjectMeta.DeepCopy()
+		updatedObjectMeta.Annotations = annotations
+		if _, err := common.PatchIngressObjectMetadata(ingClient, currIng, *updatedObjectMeta); err != nil {
+			klog.Errorf("PatchIngressObjectMetadata(%s/%s) failed: %v", currIng.Namespace, currIng.Name, err)
 			return err
 		}
 	}

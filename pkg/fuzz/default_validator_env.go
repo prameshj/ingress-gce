@@ -17,14 +17,16 @@ limitations under the License.
 package fuzz
 
 import (
+	"context"
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/ingress-gce/cmd/glbc/app"
-	backendconfig "k8s.io/ingress-gce/pkg/apis/backendconfig/v1beta1"
+	backendconfig "k8s.io/ingress-gce/pkg/apis/backendconfig/v1"
 	bcclient "k8s.io/ingress-gce/pkg/backendconfig/client/clientset/versioned"
+	"k8s.io/ingress-gce/pkg/e2e/adapter"
 	"k8s.io/ingress-gce/pkg/utils/namer"
 )
 
@@ -55,7 +57,7 @@ func NewDefaultValidatorEnv(config *rest.Config, ns string, gce cloud.Cloud) (Va
 		return nil, err
 	}
 	// Get kube-system uid.
-	kubeSystemNS, err := ret.k8s.CoreV1().Namespaces().Get("kube-system", metav1.GetOptions{})
+	kubeSystemNS, err := ret.k8s.CoreV1().Namespaces().Get(context.TODO(), "kube-system", metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +67,8 @@ func NewDefaultValidatorEnv(config *rest.Config, ns string, gce cloud.Cloud) (Va
 
 // BackendConfigs implements ValidatorEnv.
 func (e *DefaultValidatorEnv) BackendConfigs() (map[string]*backendconfig.BackendConfig, error) {
-	bcl, err := e.bc.CloudV1beta1().BackendConfigs(e.ns).List(metav1.ListOptions{})
+	bcCRUD := adapter.BackendConfigCRUD{C: e.bc}
+	bcl, err := bcCRUD.List(e.ns)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +81,7 @@ func (e *DefaultValidatorEnv) BackendConfigs() (map[string]*backendconfig.Backen
 
 // Services implements ValidatorEnv.
 func (e *DefaultValidatorEnv) Services() (map[string]*v1.Service, error) {
-	sl, err := e.k8s.CoreV1().Services(e.ns).List(metav1.ListOptions{})
+	sl, err := e.k8s.CoreV1().Services(e.ns).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}

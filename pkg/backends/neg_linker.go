@@ -19,6 +19,7 @@ import (
 	"k8s.io/ingress-gce/pkg/composite"
 	"k8s.io/ingress-gce/pkg/neg/types"
 	"k8s.io/ingress-gce/pkg/utils"
+	"k8s.io/klog"
 	"k8s.io/legacy-cloud-providers/gce"
 )
 
@@ -45,6 +46,7 @@ func NewNEGLinker(
 
 // Link implements Link.
 func (l *negLinker) Link(sp utils.ServicePort, groups []GroupKey) error {
+	version := befeatures.VersionFromServicePort(&sp)
 	var negs []*composite.NetworkEndpointGroup
 	var err error
 	for _, group := range groups {
@@ -54,7 +56,7 @@ func (l *negLinker) Link(sp utils.ServicePort, groups []GroupKey) error {
 		if negName == "" {
 			negName = sp.BackendName()
 		}
-		neg, err := l.negGetter.GetNetworkEndpointGroup(negName, group.Zone, utils.GetAPIVersionFromServicePort(&sp))
+		neg, err := l.negGetter.GetNetworkEndpointGroup(negName, group.Zone, version)
 		if err != nil {
 			return err
 		}
@@ -62,8 +64,6 @@ func (l *negLinker) Link(sp utils.ServicePort, groups []GroupKey) error {
 	}
 
 	beName := sp.BackendName()
-
-	version := befeatures.VersionFromServicePort(&sp)
 	scope := befeatures.ScopeFromServicePort(&sp)
 
 	key, err := composite.CreateKey(l.cloud, beName, scope)
@@ -89,6 +89,7 @@ func (l *negLinker) Link(sp utils.ServicePort, groups []GroupKey) error {
 	}
 
 	if !oldBackends.Equal(newBackends) {
+		klog.V(2).Infof("Backends changed for service port %s, removing: %s and adding: %s", sp.ID, oldBackends.Difference(newBackends), newBackends.Difference(oldBackends))
 		backendService.Backends = targetBackends
 		return composite.UpdateBackendService(l.cloud, key, backendService)
 	}

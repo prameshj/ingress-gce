@@ -41,6 +41,7 @@ import (
 	"k8s.io/ingress-gce/pkg/flags"
 	"k8s.io/ingress-gce/pkg/instances"
 	"k8s.io/ingress-gce/pkg/loadbalancers/features"
+	"k8s.io/ingress-gce/pkg/translator"
 	"k8s.io/ingress-gce/pkg/utils"
 	"k8s.io/ingress-gce/pkg/utils/common"
 	namer_util "k8s.io/ingress-gce/pkg/utils/namer"
@@ -987,6 +988,38 @@ func TestCreateBothLoadBalancers(t *testing.T) {
 	}
 }
 
+// Test StaticIP annotation behavior.
+// When a non-existent StaticIP value is specified, ingress creation must fail.
+func TestStaticIP(t *testing.T) {
+	j := newTestJig(t)
+	gceUrlMap := utils.NewGCEURLMap()
+	gceUrlMap.DefaultBackend = &utils.ServicePort{NodePort: 31234, BackendNamer: j.namer}
+	gceUrlMap.PutPathRulesForHost("bar.example.com", []utils.PathRule{{Path: "/bar", Backend: utils.ServicePort{NodePort: 30000, BackendNamer: j.namer}}})
+	ing := newIngress()
+	ing.Annotations = map[string]string{
+		"StaticIPNameKey": "teststaticip",
+	}
+	lbInfo := &L7RuntimeInfo{
+		AllowHTTP:    true,
+		TLS:          []*TLSCerts{{Key: "key", Cert: "cert"}},
+		UrlMap:       gceUrlMap,
+		Ingress:      ing,
+		StaticIPName: "teststaticip",
+	}
+
+	if _, err := j.pool.Ensure(lbInfo); err == nil {
+		t.Fatalf("expected error ensuring ingress with non-existent static ip")
+	}
+	// Create static IP
+	err := j.fakeGCE.ReserveGlobalAddress(&compute.Address{Name: "teststaticip", Address: "1.2.3.4"})
+	if err != nil {
+		t.Fatalf("ip address reservation failed - %v", err)
+	}
+	if _, err := j.pool.Ensure(lbInfo); err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
+}
+
 // Test setting frontendconfig Ssl policy
 func TestFrontendConfigSslPolicy(t *testing.T) {
 	flags.F.EnableFrontendConfig = true
@@ -1153,7 +1186,7 @@ func verifyURLMap(t *testing.T, j *testJig, feNamer namer_util.IngressFrontendNa
 	if err != nil || um == nil {
 		t.Errorf("j.fakeGCE.GetUrlMap(%q) = %v, %v; want _, nil", name, um, err)
 	}
-	wantComputeURLMap := toCompositeURLMap(wantGCEURLMap, feNamer, key)
+	wantComputeURLMap := translator.ToCompositeURLMap(wantGCEURLMap, feNamer, key)
 	if !mapsEqual(wantComputeURLMap, um) {
 		t.Errorf("mapsEqual() = false, got\n%+v\n  want\n%+v", um, wantComputeURLMap)
 	}

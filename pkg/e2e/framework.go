@@ -32,7 +32,7 @@ import (
 	computealpha "google.golang.org/api/compute/v0.alpha"
 	computebeta "google.golang.org/api/compute/v0.beta"
 	compute "google.golang.org/api/compute/v1"
-	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -40,6 +40,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	backendconfigclient "k8s.io/ingress-gce/pkg/backendconfig/client/clientset/versioned"
+	frontendconfigclient "k8s.io/ingress-gce/pkg/frontendconfig/client/clientset/versioned"
 	"k8s.io/klog"
 )
 
@@ -73,27 +74,30 @@ func NewFramework(config *rest.Config, options Options) *Framework {
 		klog.Fatalf("Failed to create BackendConfig client: %v", err)
 	}
 
+	frontendConfigClient, err := frontendconfigclient.NewForConfig(config)
+	if err != nil {
+		klog.Fatalf("Failed to create BackendConfig client: %v", err)
+	}
+
 	f := &Framework{
-		RestConfig:          config,
-		Clientset:           kubernetes.NewForConfigOrDie(config),
-		BackendConfigClient: backendConfigClient,
-		Project:             options.Project,
-		Region:              options.Region,
-		Network:             options.Network,
-		Cloud:               theCloud,
-		Rand:                rand.New(rand.NewSource(options.Seed)),
-		destroySandboxes:    options.DestroySandboxes,
-		CreateILBSubnet:     options.CreateILBSubnet,
+		RestConfig:           config,
+		Clientset:            kubernetes.NewForConfigOrDie(config),
+		crdClient:            apiextensionsclient.NewForConfigOrDie(config),
+		FrontendConfigClient: frontendConfigClient,
+		BackendConfigClient:  backendConfigClient,
+		Project:              options.Project,
+		Region:               options.Region,
+		Network:              options.Network,
+		Cloud:                theCloud,
+		Rand:                 rand.New(rand.NewSource(options.Seed)),
+		destroySandboxes:     options.DestroySandboxes,
+		CreateILBSubnet:      options.CreateILBSubnet,
 	}
 	f.statusManager = NewStatusManager(f)
 
 	// Preparing dynamic client if Istio:DestinationRule CRD exisits and matches the required version.
 	// The client is used by the ASM e2e tests.
-	apiextensionClient, err := apiextensionsclientset.NewForConfig(config)
-	if err != nil {
-		klog.Fatalf("Failed to create ApiextensionClient for DestinationRule, disabling ASM Mode, error: %s", err)
-	}
-	destinationRuleCRD, err := apiextensionClient.ApiextensionsV1beta1().CustomResourceDefinitions().Get(destinationRuleCRDName, metav1.GetOptions{})
+	destinationRuleCRD, err := f.crdClient.ApiextensionsV1beta1().CustomResourceDefinitions().Get(context.TODO(), destinationRuleCRDName, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
 			klog.Infof("Cannot load DestinationRule CRD, Istio is disabled on this cluster.")
@@ -120,14 +124,15 @@ type Framework struct {
 	RestConfig            *rest.Config
 	Clientset             *kubernetes.Clientset
 	DestinationRuleClient dynamic.NamespaceableResourceInterface
-
-	BackendConfigClient *backendconfigclient.Clientset
-	Project             string
-	Region              string
-	Network             string
-	Cloud               cloud.Cloud
-	Rand                *rand.Rand
-	statusManager       *StatusManager
+	crdClient             *apiextensionsclient.Clientset
+	BackendConfigClient   *backendconfigclient.Clientset
+	FrontendConfigClient  *frontendconfigclient.Clientset
+	Project               string
+	Region                string
+	Network               string
+	Cloud                 cloud.Cloud
+	Rand                  *rand.Rand
+	statusManager         *StatusManager
 
 	destroySandboxes bool
 	CreateILBSubnet  bool
@@ -139,7 +144,7 @@ type Framework struct {
 // SanityCheck the test environment before proceeding.
 func (f *Framework) SanityCheck() error {
 	klog.V(2).Info("Checking connectivity with Kubernetes API")
-	if _, err := f.Clientset.CoreV1().Pods("default").List(metav1.ListOptions{}); err != nil {
+	if _, err := f.Clientset.CoreV1().Pods("default").List(context.TODO(), metav1.ListOptions{}); err != nil {
 		klog.Errorf("Error accessing Kubernetes API: %v", err)
 		return err
 	}
@@ -161,6 +166,11 @@ func (f *Framework) SanityCheck() error {
 	klog.V(2).Info("Checking status manager initialization")
 	if err := f.statusManager.init(); err != nil {
 		klog.Errorf("Error initializing status manager: %v", err)
+		return err
+	}
+	klog.V(2).Info("Waiting for BackendConfig CRD to be established")
+	if err := waitForBackendConfigCRDEstablish(f.crdClient); err != nil {
+		klog.Errorf("Error waiting for BackendConfig CRD to be established: %v", err)
 		return err
 	}
 	return nil

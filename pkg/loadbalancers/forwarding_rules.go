@@ -21,20 +21,16 @@ import (
 
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud"
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud/meta"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/ingress-gce/pkg/annotations"
 	"k8s.io/ingress-gce/pkg/composite"
 	"k8s.io/ingress-gce/pkg/flags"
+	"k8s.io/ingress-gce/pkg/translator"
 	"k8s.io/ingress-gce/pkg/utils"
 	"k8s.io/ingress-gce/pkg/utils/namer"
 	"k8s.io/klog"
 	"k8s.io/legacy-cloud-providers/gce"
-)
-
-const (
-	httpDefaultPortRange  = "80-80"
-	httpsDefaultPortRange = "443-443"
 )
 
 func (l *L7) checkHttpForwardingRule() (err error) {
@@ -42,8 +38,11 @@ func (l *L7) checkHttpForwardingRule() (err error) {
 		return fmt.Errorf("cannot create forwarding rule without proxy")
 	}
 	name := l.namer.ForwardingRule(namer.HTTPProtocol)
-	address, _ := l.getEffectiveIP()
-	fw, err := l.checkForwardingRule(name, l.tp.SelfLink, address, httpDefaultPortRange)
+	address, _, err := l.getEffectiveIP()
+	if err != nil {
+		return err
+	}
+	fw, err := l.checkForwardingRule(namer.HTTPProtocol, name, l.tp.SelfLink, address)
 	if err != nil {
 		return err
 	}
@@ -57,8 +56,11 @@ func (l *L7) checkHttpsForwardingRule() (err error) {
 		return nil
 	}
 	name := l.namer.ForwardingRule(namer.HTTPSProtocol)
-	address, _ := l.getEffectiveIP()
-	fws, err := l.checkForwardingRule(name, l.tps.SelfLink, address, httpsDefaultPortRange)
+	address, _, err := l.getEffectiveIP()
+	if err != nil {
+		return err
+	}
+	fws, err := l.checkForwardingRule(namer.HTTPSProtocol, name, l.tps.SelfLink, address)
 	if err != nil {
 		return err
 	}
@@ -66,22 +68,32 @@ func (l *L7) checkHttpsForwardingRule() (err error) {
 	return nil
 }
 
-func (l *L7) checkForwardingRule(name, proxyLink, ip, portRange string) (fw *composite.ForwardingRule, err error) {
+func (l *L7) checkForwardingRule(protocol namer.NamerProtocol, name, proxyLink, ip string) (existing *composite.ForwardingRule, err error) {
 	key, err := l.CreateKey(name)
 	if err != nil {
 		return nil, err
 	}
 	version := l.Versions().ForwardingRule
-	fw, _ = composite.GetForwardingRule(l.cloud, key, version)
-	if fw != nil && (ip != "" && fw.IPAddress != ip || fw.PortRange != portRange) {
+	description, err := l.description()
+	if err != nil {
+		return nil, err
+	}
+
+	isL7ILB := flags.F.EnableL7Ilb && utils.IsGCEL7ILBIngress(l.runtimeInfo.Ingress)
+	tr := translator.NewTranslator(isL7ILB, l.namer)
+	env := &translator.Env{VIP: ip, Network: l.cloud.NetworkURL(), Subnetwork: l.cloud.SubnetworkURL()}
+	fr := tr.ToCompositeForwardingRule(env, protocol, version, proxyLink, description)
+
+	existing, _ = composite.GetForwardingRule(l.cloud, key, version)
+	if existing != nil && (fr.IPAddress != "" && existing.IPAddress != fr.IPAddress || existing.PortRange != fr.PortRange) {
 		klog.Warningf("Recreating forwarding rule %v(%v), so it has %v(%v)",
-			fw.IPAddress, fw.PortRange, ip, portRange)
+			existing.IPAddress, existing.PortRange, fr.IPAddress, fr.PortRange)
 		if err = utils.IgnoreHTTPNotFound(composite.DeleteForwardingRule(l.cloud, key, version)); err != nil {
 			return nil, err
 		}
-		fw = nil
+		existing = nil
 	}
-	if fw == nil {
+	if existing == nil {
 		// This is a special case where exactly one of http or https forwarding rule
 		// existed before and the existing forwarding rule uses ingress managed static ip address.
 		// In this case, the forwarding rule needs to be created with the same static ip.
@@ -98,67 +110,46 @@ func (l *L7) checkForwardingRule(name, proxyLink, ip, portRange string) (fw *com
 				}
 			}
 		}
-		klog.V(3).Infof("Creating forwarding rule for proxy %q and ip %v:%v", proxyLink, ip, portRange)
-		description, err := l.description()
-		if err != nil {
-			return nil, err
-		}
-		rule := &composite.ForwardingRule{
-			Name:        name,
-			IPAddress:   ip,
-			Target:      proxyLink,
-			PortRange:   portRange,
-			IPProtocol:  "TCP",
-			Description: description,
-			Version:     version,
-		}
+		klog.V(3).Infof("Creating forwarding rule for proxy %q and ip %v:%v", proxyLink, ip, protocol)
 
-		// Update rule for L7-ILB
-		if flags.F.EnableL7Ilb && utils.IsGCEL7ILBIngress(l.runtimeInfo.Ingress) {
-			rule.LoadBalancingScheme = "INTERNAL_MANAGED"
-			rule.Network = l.cloud.NetworkURL()
-			rule.Subnetwork = l.cloud.SubnetworkURL()
-		}
-
-		if err = composite.CreateForwardingRule(l.cloud, key, rule); err != nil {
+		if err = composite.CreateForwardingRule(l.cloud, key, fr); err != nil {
 			return nil, err
 		}
 		key, err = l.CreateKey(name)
 		if err != nil {
 			return nil, err
 		}
-		fw, err = composite.GetForwardingRule(l.cloud, key, version)
+		existing, err = composite.GetForwardingRule(l.cloud, key, version)
 		if err != nil {
 			return nil, err
 		}
 	}
 	// TODO: If the port range and protocol don't match, recreate the rule
-	if utils.EqualResourceIDs(fw.Target, proxyLink) {
-		klog.V(4).Infof("Forwarding rule %v already exists", fw.Name)
+	if utils.EqualResourceIDs(existing.Target, proxyLink) {
+		klog.V(4).Infof("Forwarding rule %v already exists", existing.Name)
 	} else {
 		klog.V(3).Infof("Forwarding rule %v has the wrong proxy, setting %v overwriting %v",
-			fw.Name, fw.Target, proxyLink)
-		key, err := l.CreateKey(fw.Name)
+			existing.Name, existing.Target, proxyLink)
+		key, err := l.CreateKey(existing.Name)
 		if err != nil {
 			return nil, err
 		}
-		if err := composite.SetProxyForForwardingRule(l.cloud, key, fw, proxyLink); err != nil {
+		if err := composite.SetProxyForForwardingRule(l.cloud, key, existing, proxyLink); err != nil {
 			return nil, err
 		}
 	}
-	return fw, nil
+	return existing, nil
 }
 
 // getEffectiveIP returns a string with the IP to use in the HTTP and HTTPS
-// forwarding rules, and a boolean indicating if this is an IP the controller
-// should manage or not.
-func (l *L7) getEffectiveIP() (string, bool) {
+// forwarding rules, a boolean indicating if this is an IP the controller
+// should manage or not and an error if the specified IP was not found.
+func (l *L7) getEffectiveIP() (string, bool, error) {
 
 	// A note on IP management:
 	// User specifies a different IP on startup:
 	//	- We create a forwarding rule with the given IP.
-	//		- If this ip doesn't exist in GCE, we create another one in the hope
-	//		  that they will rectify it later on.
+	//		- If this ip doesn't exist in GCE, an error is thrown which fails ingress creation.
 	//	- In the happy case, no static ip is created or deleted by this controller.
 	// Controller allocates a staticIP/ephemeralIP, but user changes it:
 	//  - We still delete the old static IP, but only when we tear down the
@@ -175,16 +166,16 @@ func (l *L7) getEffectiveIP() (string, bool) {
 		// Existing static IPs allocated to forwarding rules will get orphaned
 		// till the Ingress is torn down.
 		if ip, err := l.cloud.GetGlobalAddress(l.runtimeInfo.StaticIPName); err != nil || ip == nil {
-			klog.Warningf("The given static IP name %v doesn't translate to an existing global static IP, ignoring it and allocating a new IP: %v",
-				l.runtimeInfo.StaticIPName, err)
+			return "", false, fmt.Errorf("the given static IP name %v doesn't translate to an existing global static IP.",
+				l.runtimeInfo.StaticIPName)
 		} else {
-			return ip.Address, false
+			return ip.Address, false, nil
 		}
 	}
 	if l.ip != nil {
-		return l.ip.Address, true
+		return l.ip.Address, true, nil
 	}
-	return "", true
+	return "", true, nil
 }
 
 // ensureForwardingRule creates a forwarding rule with the given name, if it does not exist. It updates the existing

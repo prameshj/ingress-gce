@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/ingress-gce/pkg/e2e/adapter"
 	"k8s.io/ingress-gce/pkg/utils"
 
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud/meta"
@@ -129,10 +130,10 @@ func ensureEchoService(s *Sandbox, name string, annotations map[string]string, s
 			Type:     svcType,
 		},
 	}
-	svc, err := s.f.Clientset.CoreV1().Services(s.Namespace).Get(name, metav1.GetOptions{})
+	svc, err := s.f.Clientset.CoreV1().Services(s.Namespace).Get(context.TODO(), name, metav1.GetOptions{})
 
 	if svc == nil || err != nil {
-		if svc, err = s.f.Clientset.CoreV1().Services(s.Namespace).Create(expectedSvc); err != nil {
+		if svc, err = s.f.Clientset.CoreV1().Services(s.Namespace).Create(context.TODO(), expectedSvc, metav1.CreateOptions{}); err != nil {
 			return nil, err
 		}
 		return svc, err
@@ -144,7 +145,7 @@ func ensureEchoService(s *Sandbox, name string, annotations map[string]string, s
 		svc.Spec.Ports = expectedSvc.Spec.Ports
 		svc.Spec.Type = expectedSvc.Spec.Type
 
-		if svc, err := s.f.Clientset.CoreV1().Services(s.Namespace).Update(svc); err != nil {
+		if svc, err := s.f.Clientset.CoreV1().Services(s.Namespace).Update(context.TODO(), svc, metav1.UpdateOptions{}); err != nil {
 			return nil, fmt.Errorf("svc: %v\nexpectedSvc: %v\nerr: %v", svc, expectedSvc, err)
 		}
 	}
@@ -218,19 +219,19 @@ func ensureEchoDeployment(s *Sandbox, name string, numReplicas int32, modify fun
 	}
 	modify(deployment)
 
-	existingDeployment, err := s.f.Clientset.AppsV1().Deployments(s.Namespace).Get(name, metav1.GetOptions{})
+	existingDeployment, err := s.f.Clientset.AppsV1().Deployments(s.Namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if existingDeployment == nil || err != nil {
-		if _, err = s.f.Clientset.AppsV1().Deployments(s.Namespace).Create(deployment); err != nil {
+		if _, err = s.f.Clientset.AppsV1().Deployments(s.Namespace).Create(context.TODO(), deployment, metav1.CreateOptions{}); err != nil {
 			return err
 		}
 	} else {
-		if _, err = s.f.Clientset.AppsV1().Deployments(s.Namespace).Update(deployment); err != nil {
+		if _, err = s.f.Clientset.AppsV1().Deployments(s.Namespace).Update(context.TODO(), deployment, metav1.UpdateOptions{}); err != nil {
 			return err
 		}
 	}
 
 	deployment.Spec.Replicas = &numReplicas
-	if _, err = s.f.Clientset.AppsV1().Deployments(s.Namespace).Update(deployment); err != nil {
+	if _, err = s.f.Clientset.AppsV1().Deployments(s.Namespace).Update(context.TODO(), deployment, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("Error updating deployment scale: %v", err)
 	}
 	return nil
@@ -245,7 +246,7 @@ func CreateSecret(s *Sandbox, name string, data map[string][]byte) (*v1.Secret, 
 		Data: data,
 	}
 	var err error
-	if secret, err = s.f.Clientset.CoreV1().Secrets(s.Namespace).Create(secret); err != nil {
+	if secret, err = s.f.Clientset.CoreV1().Secrets(s.Namespace).Create(context.TODO(), secret, metav1.CreateOptions{}); err != nil {
 		return nil, err
 	}
 	klog.V(2).Infof("Secret %q:%q created", s.Namespace, name)
@@ -255,7 +256,7 @@ func CreateSecret(s *Sandbox, name string, data map[string][]byte) (*v1.Secret, 
 
 // DeleteSecret deletes a secret.
 func DeleteSecret(s *Sandbox, name string) error {
-	if err := s.f.Clientset.CoreV1().Secrets(s.Namespace).Delete(name, &metav1.DeleteOptions{}); err != nil {
+	if err := s.f.Clientset.CoreV1().Secrets(s.Namespace).Delete(context.TODO(), name, metav1.DeleteOptions{}); err != nil {
 		return err
 	}
 	klog.V(2).Infof("Secret %q:%q deleted", s.Namespace, name)
@@ -265,7 +266,7 @@ func DeleteSecret(s *Sandbox, name string) error {
 
 // EnsureIngress creates a new Ingress or updates an existing one.
 func EnsureIngress(s *Sandbox, ing *v1beta1.Ingress) (*v1beta1.Ingress, error) {
-	crud := &IngressCRUD{s.f.Clientset}
+	crud := &adapter.IngressCRUD{C: s.f.Clientset}
 	currentIng, err := crud.Get(ing.ObjectMeta.Namespace, ing.ObjectMeta.Name)
 	if currentIng == nil || err != nil {
 		return crud.Create(ing)
@@ -381,7 +382,7 @@ func CreatePorterDeployment(s *Sandbox, name string, replics int32, version stri
 			},
 		},
 	}
-	_, err := s.f.Clientset.AppsV1().Deployments(s.Namespace).Create(&deployment)
+	_, err := s.f.Clientset.AppsV1().Deployments(s.Namespace).Create(context.TODO(), &deployment, metav1.CreateOptions{})
 	return err
 }
 
@@ -399,13 +400,13 @@ func CreatePorterService(s *Sandbox, name string) error {
 			},
 		},
 	}
-	_, err := s.f.Clientset.CoreV1().Services(svc.Namespace).Create(&svc)
+	_, err := s.f.Clientset.CoreV1().Services(svc.Namespace).Create(context.TODO(), &svc, metav1.CreateOptions{})
 	return err
 }
 
 // GetConfigMap gets ConfigMap and returns the Data field.
 func GetConfigMap(s *Sandbox, namespace, name string) (map[string]string, error) {
-	cm, err := s.f.Clientset.CoreV1().ConfigMaps(namespace).Get(name, metav1.GetOptions{})
+	cm, err := s.f.Clientset.CoreV1().ConfigMaps(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -415,16 +416,16 @@ func GetConfigMap(s *Sandbox, namespace, name string) (map[string]string, error)
 // EnsureConfigMap ensures the namespace:name ConfigMap Data fieled, create if the target not exist.
 func EnsureConfigMap(s *Sandbox, namespace, name string, data map[string]string) error {
 	cm := v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}, Data: data}
-	_, err := s.f.Clientset.CoreV1().ConfigMaps(namespace).Update(&cm)
+	_, err := s.f.Clientset.CoreV1().ConfigMaps(namespace).Update(context.TODO(), &cm, metav1.UpdateOptions{})
 	if err != nil && errors.IsNotFound(err) {
-		_, err = s.f.Clientset.CoreV1().ConfigMaps(namespace).Create(&cm)
+		_, err = s.f.Clientset.CoreV1().ConfigMaps(namespace).Create(context.TODO(), &cm, metav1.CreateOptions{})
 	}
 	return err
 }
 
 // DeleteConfigMap deletes the namespace:name ConfigMap
 func DeleteConfigMap(s *Sandbox, namespace, name string) error {
-	return s.f.Clientset.CoreV1().ConfigMaps(namespace).Delete(name, &metav1.DeleteOptions{})
+	return s.f.Clientset.CoreV1().ConfigMaps(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 }
 
 // EnsurePorterDestinationRule ensures the namespace:name DestinationRule.
@@ -441,7 +442,7 @@ func EnsurePorterDestinationRule(s *Sandbox, name, svcName string, versions []st
 		return fmt.Errorf("Failed convert DestinationRule to Unstructured: %v", err)
 	}
 
-	usDr, err := s.f.DestinationRuleClient.Namespace(s.Namespace).Get(name, metav1.GetOptions{})
+	usDr, err := s.f.DestinationRuleClient.Namespace(s.Namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if err != nil && errors.IsNotFound(err) {
 		usDr := unstructured.Unstructured{}
 		usDr.SetName(name)
@@ -450,15 +451,15 @@ func EnsurePorterDestinationRule(s *Sandbox, name, svcName string, versions []st
 		usDr.SetAPIVersion("networking.istio.io/v1alpha3")
 		usDr.Object["spec"] = spec
 
-		_, err = s.f.DestinationRuleClient.Namespace(s.Namespace).Create(&usDr, metav1.CreateOptions{})
+		_, err = s.f.DestinationRuleClient.Namespace(s.Namespace).Create(context.TODO(), &usDr, metav1.CreateOptions{})
 		return err
 	}
 	usDr.Object["spec"] = spec
-	_, err = s.f.DestinationRuleClient.Namespace(s.Namespace).Update(usDr, metav1.UpdateOptions{})
+	_, err = s.f.DestinationRuleClient.Namespace(s.Namespace).Update(context.TODO(), usDr, metav1.UpdateOptions{})
 	return err
 }
 
 // DeleteDestinationRule deletes the namespace:name DestinationRule.
 func DeleteDestinationRule(s *Sandbox, namespace, name string) error {
-	return s.f.DestinationRuleClient.Namespace(namespace).Delete(name, &metav1.DeleteOptions{})
+	return s.f.DestinationRuleClient.Namespace(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 }
